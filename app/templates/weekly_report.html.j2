@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BiliUP Organizer 周报</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f7;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f7;padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0"
+               style="width:640px;max-width:94%;background:#ffffff;border-radius:10px;font-family:'Helvetica Neue',Helvetica,Arial,'PingFang SC','Microsoft YaHei',sans-serif;color:#27272a;overflow:hidden;">
+          <tr>
+            <td style="background:#18181b;padding:24px 32px;">
+              <h1 style="margin:0;font-size:20px;color:#ffffff;">BiliUP Organizer 周报</h1>
+              <p style="margin:6px 0 0;font-size:12px;color:#a1a1aa;">生成时间：{{ generated_at }}（UTC）</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 32px 8px;">
+              <h2 style="margin:0 0 12px;font-size:16px;color:#18181b;border-left:4px solid #6366f1;padding-left:10px;">总览</h2>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ total_ups }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">关注 UP 总数</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ groups }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">分组数</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ new_videos }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">近7天新增视频</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ watched }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">近7天观看次数</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #f59e0b;padding-left:10px;">长期未更新</h2>
+              {% if stale %}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
+                <tr style="color:#71717a;">
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">最近投稿</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">距今天数</td>
+                </tr>
+                {% for up in stale %}
+                <tr>
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.last_video_at or '无投稿记录' }}</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;color:#f59e0b;">{{ up.days }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">暂无长期未更新的 UP。</p>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #ef4444;padding-left:10px;">从未观看</h2>
+              {% if never_watched %}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
+                <tr style="color:#71717a;">
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">关注时间</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">已关注天数</td>
+                </tr>
+                {% for up in never_watched %}
+                <tr>
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.followed_at }}</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;color:#ef4444;">{{ up.days }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">没有关注后从未观看的 UP，很棒。</p>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #6366f1;padding-left:10px;">重要UP未观看</h2>
+              {% if important_unwatched %}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
+                <tr style="color:#71717a;">
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">最新视频</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">发布时间</td>
+                </tr>
+                {% for up in important_unwatched %}
+                <tr>
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
+                  <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.title }}</td>
+                  <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.last_video_at }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">重要 UP 的新视频都已观看。</p>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 28px;">
+              <p style="margin:0;font-size:13px;color:#71717a;">
+                当前未处理提醒：<strong style="color:#ef4444;">{{ open_reminders }}</strong> 条。
+                登录后前往「提醒中心」查看详情。
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#fafafa;padding:14px 32px;border-top:1px solid #e4e4e7;">
+              <p style="margin:0;font-size:11px;color:#a1a1aa;">
+                本邮件由 BiliUP Organizer 自动发送，可在「设置 → 提醒」中关闭周报。
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
