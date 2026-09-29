@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import random
+import secrets
 import time
 from collections.abc import Callable
 from typing import Any
@@ -133,7 +133,11 @@ class BiliClient:
         self._last_request_at = self._clock()
 
     def _interval(self) -> float:
-        return self.min_interval * (1.0 + random.uniform(0.0, 0.25))
+        # jitter only needs unpredictability for rate-limit politeness, but we
+        # use a CSPRNG anyway to keep security scanners quiet; not used for
+        # anything secret.
+        fraction = secrets.randbelow(2500) / 10000.0
+        return self.min_interval * (1.0 + fraction)
 
     def _wbi_keys(self) -> tuple[str, str]:
         cached = self._wbi_cache.get()
