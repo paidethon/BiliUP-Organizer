@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the React SPA (Vite) into static assets
