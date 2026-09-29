@@ -6,6 +6,7 @@ JSON body of ingest items (guid=bvid is the idempotency key; replays answer
 {"status": "exists"}). Owned by the main agent after the RSS subagent hit the
 concurrency limit.
 """
+
 from __future__ import annotations
 
 import logging
@@ -142,9 +143,7 @@ def push_pending(db: Session) -> dict:
     )
     if last_success is not None and last_success.created_at:
         try:
-            since = datetime.strptime(last_success.created_at[:19], "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=UTC
-            )
+            since = datetime.strptime(last_success.created_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
         except ValueError:
             since = datetime.now(UTC) - timedelta(days=7)
     else:

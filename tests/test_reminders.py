@@ -228,9 +228,7 @@ def test_system_login_and_risk_roundtrip(db, factory) -> None:  # noqa: ANN001
     mine = factory.make_up(ai_status="error")
     # other test modules may leave ai_status=error rows behind (shared DB); only
     # then does ai_failed:system stay open after we clear our own row
-    foreign_errors = (
-        db.query(UpUser).filter(UpUser.ai_status == "error", UpUser.mid != mine.mid).count() > 0
-    )
+    foreign_errors = db.query(UpUser).filter(UpUser.ai_status == "error", UpUser.mid != mine.mid).count() > 0
     account = db.query(BilibiliAccount).first()
     created = account is None
     if created:

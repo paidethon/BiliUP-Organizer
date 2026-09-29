@@ -194,9 +194,7 @@ def test_poll_login_confirmed_persists_cookies_and_profile(db: Session, fast_cli
 @respx.mock
 def test_poll_login_confirmed_survives_nav_failure(db: Session, fast_client) -> None:
     mock_poll(0, CONFIRM_HEADERS)
-    respx.get(f"{API_BASE}/x/web-interface/nav").mock(
-        return_value=httpx.Response(500, text="nav boom")
-    )
+    respx.get(f"{API_BASE}/x/web-interface/nav").mock(return_value=httpx.Response(500, text="nav boom"))
 
     result = qrlogin_module.poll_login(db, "KEY123")
 

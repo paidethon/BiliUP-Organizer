@@ -129,9 +129,7 @@ def _expected_alerts(db: Session, p: dict, now: datetime) -> _EXPECTED:
         "long": _cutoff(p["long_unwatched_days"], now),
         "never": _cutoff(p["never_watched_days"], now),
     }
-    important_groups = {
-        g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()
-    }
+    important_groups = {g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()}
     pending: dict[int, AiSuggestion] = {}
     rows = (
         db.query(AiSuggestion)

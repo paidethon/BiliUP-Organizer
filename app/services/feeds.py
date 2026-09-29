@@ -3,6 +3,7 @@
 Frozen contract (implemented by the main agent after the RSS subagent hit the
 concurrency limit): collect_entries / render_atom / render_feed_for_token.
 """
+
 from __future__ import annotations
 
 import hashlib

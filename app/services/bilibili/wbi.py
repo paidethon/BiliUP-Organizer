@@ -12,10 +12,70 @@ from app.services.bilibili.errors import BiliError
 # Exact 64-entry permutation table from docs/RESEARCH_BILIBILI.md §3.2
 # (source: bilibili-API-collect docs/misc/sign/wbi.md). Do not "fix" ordering.
 MIXIN_KEY_ENC_TAB: tuple[int, ...] = (
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46,
+    47,
+    18,
+    2,
+    53,
+    8,
+    23,
+    32,
+    15,
+    50,
+    10,
+    31,
+    58,
+    3,
+    45,
+    35,
+    27,
+    43,
+    5,
+    49,
+    33,
+    9,
+    42,
+    19,
+    29,
+    28,
+    14,
+    39,
+    12,
+    38,
+    41,
+    13,
+    37,
+    48,
+    7,
+    16,
+    24,
+    55,
+    40,
+    61,
+    26,
+    17,
+    0,
+    1,
+    60,
+    51,
+    30,
+    4,
+    22,
+    25,
+    54,
+    21,
+    56,
+    59,
+    6,
+    63,
+    57,
+    62,
+    11,
+    36,
+    20,
+    34,
+    44,
+    52,
 )
 
 # Characters stripped from parameter values before signing (wbi.md step 4).
@@ -36,9 +96,7 @@ def get_mixin_keys(img_key: str, sub_key: str) -> tuple[str, str]:
     return mixin_key, raw_key
 
 
-def sign_params(
-    params: dict[str, Any], img_key: str, sub_key: str, now: int | None = None
-) -> dict[str, Any]:
+def sign_params(params: dict[str, Any], img_key: str, sub_key: str, now: int | None = None) -> dict[str, Any]:
     """Wbi-sign query params (wbi.md algorithm).
 
     Adds ``wts`` (second-precision unix time), sorts by key, strips ``!'()*``
@@ -53,9 +111,7 @@ def sign_params(
     prepared: dict[str, Any] = {str(k): v for k, v in params.items()}
     prepared["wts"] = wts
     prepared = dict(sorted(prepared.items()))
-    prepared = {
-        k: "".join(ch for ch in str(v) if ch not in _FILTER_CHARS) for k, v in prepared.items()
-    }
+    prepared = {k: "".join(ch for ch in str(v) if ch not in _FILTER_CHARS) for k, v in prepared.items()}
     query = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in prepared.items())
     prepared["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
     return prepared

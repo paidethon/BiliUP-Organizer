@@ -42,17 +42,13 @@ def test_permutation_table_is_the_documented_64_entries() -> None:
 
 
 def test_sign_params_matches_official_vector() -> None:
-    signed = sign_params(
-        {"foo": "114", "bar": "514", "zab": 1919810}, IMG_KEY, SUB_KEY, now=OFFICIAL_WTS
-    )
+    signed = sign_params({"foo": "114", "bar": "514", "zab": 1919810}, IMG_KEY, SUB_KEY, now=OFFICIAL_WTS)
     assert signed["wts"] == str(OFFICIAL_WTS)
     assert signed["w_rid"] == OFFICIAL_W_RID
 
 
 def test_sign_params_keys_sorted_values_filtered_and_encoded() -> None:
-    signed = sign_params(
-        {"z": "a b", "a": "x!y'z()*w", "m": "中文"}, IMG_KEY, SUB_KEY, now=OFFICIAL_WTS
-    )
+    signed = sign_params({"z": "a b", "a": "x!y'z()*w", "m": "中文"}, IMG_KEY, SUB_KEY, now=OFFICIAL_WTS)
     keys = [k for k in signed if k != "w_rid"]
     assert keys == sorted(keys)
     # !'()* stripped from values (wbi.md step 4)
@@ -61,9 +57,7 @@ def test_sign_params_keys_sorted_values_filtered_and_encoded() -> None:
     # encoding happens when building the md5 query (recomputed below)
     assert signed["z"] == "a b"
     assert signed["m"] == "中文"
-    query = "&".join(
-        f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in signed.items() if k != "w_rid"
-    )
+    query = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in signed.items() if k != "w_rid")
     assert signed["w_rid"] == hashlib.md5((query + MIXIN_KEY).encode("utf-8")).hexdigest()
 
 

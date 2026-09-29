@@ -196,9 +196,7 @@ def test_ensure_buvid_warms_visitor_cookie() -> None:
                 ],
             )
         )
-        route = respx.get(f"{API_BASE}/x/web-interface/card").mock(
-            return_value=envelope(data={"card": {}})
-        )
+        route = respx.get(f"{API_BASE}/x/web-interface/card").mock(return_value=envelope(data={"card": {}}))
         client.ensure_buvid()
         client._request("GET", f"{API_BASE}/x/web-interface/card")
         assert home.called
