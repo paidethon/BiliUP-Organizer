@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from app.models import SyncRun
+from app.models import BilibiliAccount, SyncRun, UpUser, WatchHistory
+from app.services.bilibili.errors import AuthExpiredError, RiskControlError
 from app.util import utcnow
+
+_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+_DEFAULT_HISTORY_PAGES = 5
 
 
 def run_sync_kind(db: Session, kind: str) -> dict:
@@ -41,7 +46,64 @@ def run_followings_sync(db: Session) -> dict:
     - for new users, optionally fetch latest archive (bounded by rate limits)
     - return {"total": int, "new": int, "updated": int, "missing": int}
     """
-    raise NotImplementedError("implemented by the sync agent")
+    # Imported inside the function so tests can monkeypatch the fetchers.
+    from app.services.bilibili.cookies import load_cookies
+    from app.services.bilibili.followings import fetch_followings
+
+    if not load_cookies(db):
+        return {"skipped": "not_logged_in"}
+
+    rows = _fetch_guarded(db, fetch_followings, db)
+    now = utcnow()
+
+    ups_by_mid: dict[int, UpUser] = {up.mid: up for up in db.query(UpUser).all()}
+    seen_mids: set[int] = set()
+    new = updated = 0
+    for row in rows:
+        mid = _int_or(row.get("mid"), None)
+        if mid is None or mid in seen_mids:
+            continue
+        seen_mids.add(mid)
+        up = ups_by_mid.get(mid)
+        if up is None:
+            db.add(
+                UpUser(
+                    mid=mid,
+                    uname=str(row.get("uname") or f"UP {mid}"),
+                    sign=str(row.get("sign") or ""),
+                    face=str(row.get("face") or ""),
+                    official_type=_int_or(row.get("official_type"), -1),
+                    special=bool(row.get("special") or False),
+                    followed_at=now,
+                    ai_status="none",
+                    last_seen_at=now,
+                    missing=False,
+                )
+            )
+            new += 1
+        else:
+            if row.get("uname"):
+                up.uname = str(row["uname"])
+            if row.get("sign") is not None:
+                up.sign = str(row["sign"])
+            if row.get("face"):
+                up.face = str(row["face"])
+            official_type = row.get("official_type")
+            if official_type is not None:
+                up.official_type = _int_or(official_type, up.official_type)
+            up.special = bool(row.get("special", up.special))
+            up.last_seen_at = now
+            up.missing = False
+            updated += 1
+
+    missing = 0
+    for mid, up in ups_by_mid.items():
+        if mid not in seen_mids:
+            up.missing = True
+            missing += 1
+
+    db.commit()
+    return {"total": len(rows), "new": new, "updated": updated, "missing": missing}
 
 
 def run_watch_history_sync(db: Session) -> dict:
@@ -53,7 +115,73 @@ def run_watch_history_sync(db: Session) -> dict:
       for followed mids only
     - return {"fetched": int, "new": int, "ups_touched": int}
     """
-    raise NotImplementedError("implemented by the sync agent")
+    from app.services.bilibili.cookies import load_cookies
+    from app.services.bilibili.followings import fetch_history
+    from app.services.settings_store import get_section_raw
+
+    if not load_cookies(db):
+        return {"skipped": "not_logged_in"}
+
+    raw_pages = get_section_raw(db, "sync").get("history_max_pages")
+    max_pages = _int_or(raw_pages, _DEFAULT_HISTORY_PAGES) or _DEFAULT_HISTORY_PAGES
+
+    entries = _fetch_guarded(db, fetch_history, db, max_pages=max_pages)
+
+    ups_by_mid: dict[int, UpUser] = {up.mid: up for up in db.query(UpUser).all()}
+
+    pairs: list[tuple[str, str, dict]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        bvid = str(entry.get("bvid") or "").strip()
+        view_at = _norm_timestamp(entry.get("view_at"))
+        if not bvid or not view_at:
+            continue
+        key = (bvid, view_at)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((bvid, view_at, entry))
+
+    existing: dict[tuple[str, str], WatchHistory] = {}
+    if pairs:
+        rows = db.query(WatchHistory).filter(WatchHistory.bvid.in_([p[0] for p in pairs])).all()
+        for row in rows:
+            existing.setdefault((row.bvid, row.view_at), row)
+
+    new = 0
+    touched: set[int] = set()
+    for bvid, view_at, entry in pairs:
+        up_mid = _int_or(entry.get("author_mid"), None)
+        row = existing.get((bvid, view_at))
+        if row is None:
+            db.add(
+                WatchHistory(
+                    bvid=bvid,
+                    up_mid=up_mid,
+                    title=str(entry.get("title") or ""),
+                    view_at=view_at,
+                    progress=_int_or(entry.get("progress"), 0),
+                )
+            )
+            new += 1
+        else:
+            if entry.get("title"):
+                row.title = str(entry["title"])
+            progress = _int_or(entry.get("progress"), None)
+            if progress is not None:
+                row.progress = progress
+        if up_mid is not None and up_mid in ups_by_mid:
+            touched.add(up_mid)
+
+    db.flush()
+    for mid in touched:
+        up = ups_by_mid[mid]
+        watched = db.query(WatchHistory).filter(WatchHistory.up_mid == mid).all()
+        up.last_watched_at = max(r.view_at for r in watched)
+        up.watched_count = len({r.bvid for r in watched})
+
+    db.commit()
+    return {"fetched": len(entries), "new": new, "ups_touched": len(touched)}
 
 
 def run_native_groups_sync(db: Session) -> dict:
@@ -91,3 +219,70 @@ def record_run(db: Session, kind: str, fn) -> SyncRun:  # noqa: ANN001
         run.finished_at = utcnow()
         db.commit()
     return run
+
+
+def _fetch_guarded(db: Session, fetch, /, *args, **kwargs):
+    """Invoke a bilibili fetcher, persisting account flags on auth/risk errors.
+
+    The flag change is committed before re-raising: the route/scheduler callers
+    roll the session back when they record the failed SyncRun, which would
+    otherwise discard the flag.
+    """
+    try:
+        return fetch(*args, **kwargs)
+    except AuthExpiredError:
+        _flag_account(db, login_status="expired")
+        raise
+    except RiskControlError:
+        _flag_account(db, risk_flag=True)
+        raise
+
+
+def _flag_account(db: Session, **fields) -> None:
+    account = db.get(BilibiliAccount, 1)
+    if account is None:
+        return
+    for name, value in fields.items():
+        setattr(account, name, value)
+    db.commit()
+
+
+def _int_or(value, default: int | None) -> int | None:
+    """Coerce to int; None/garbage falls back to default."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _norm_timestamp(value) -> str | None:
+    """Normalize an upstream view_at (epoch seconds or ISO 8601) to the canonical
+    UTC 'YYYY-MM-DD HH:MM:SS' string used across the app, so lexicographic MAX()
+    over view_at stays correct. Unparseable values are passed through unchanged
+    (still deterministic, so upsert idempotency holds)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return _epoch_to_ts(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _epoch_to_ts(int(text))
+    candidate = text.replace("T", " ")
+    for suffix in ("Z", "+00:00"):
+        if candidate.endswith(suffix):
+            candidate = candidate[: -len(suffix)]
+    try:
+        return datetime.strptime(candidate[:19], _TS_FORMAT).strftime(_TS_FORMAT)
+    except ValueError:
+        return text
+
+
+def _epoch_to_ts(epoch: float) -> str | None:
+    try:
+        return datetime.fromtimestamp(epoch, tz=UTC).strftime(_TS_FORMAT)
+    except (OverflowError, OSError, ValueError):
+        return None
