@@ -1,0 +1,30 @@
+# BiliUP Organizer — Caddy reverse proxy example (up.oouo.top -> 127.0.0.1:8066).
+# The app container only publishes 127.0.0.1:8066; Caddy terminates TLS.
+#
+# ── Option A (recommended, matches docs/DEPLOY.md): Caddy installed on the host ──
+# 1. Back up the existing Caddyfile:   cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak
+# 2. Append the site block below to /etc/caddy/Caddyfile.
+# 3. Validate, then reload:            caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
+
+up.oouo.top {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8066
+}
+
+# ── Option B: Caddy running as a container ──
+# The app port is published on the host loopback, so the Caddy container needs
+# host-gateway access and a site block pointing at host.docker.internal:
+#
+#   docker run -d --name caddy --restart unless-stopped \
+#     --add-host host.docker.internal:host-gateway \
+#     -p 80:80 -p 443:443 \
+#     -v /opt/biliup-organizer/Caddyfile:/etc/caddy/Caddyfile:ro \
+#     -v caddy_data:/data -v caddy_config:/config \
+#     caddy:2
+#
+# ...and change the upstream line inside the site block to:
+#     reverse_proxy host.docker.internal:8066
+#
+# In both options Caddy automatically provisions and renews the Let's Encrypt
+# certificate for up.oouo.top. Health smoke test afterwards (docs/DEPLOY.md):
+#   curl -fsS https://up.oouo.top/healthz

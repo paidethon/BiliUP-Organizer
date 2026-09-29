@@ -1,0 +1,17 @@
+# BiliUP Organizer — production overrides. Always applied on top of the base:
+#   docker compose -f compose.yaml -f compose.production.yaml up -d
+#
+# See docs/DEPLOY.md for the full runbook.
+
+services:
+  app:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.5"

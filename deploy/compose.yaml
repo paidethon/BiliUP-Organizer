@@ -1,0 +1,33 @@
+# BiliUP Organizer — base runtime composition.
+# The image is pulled from GHCR; the server never builds anything (docs/DEPLOY.md).
+#
+# Local/production usage (always with the production overrides):
+#   docker compose -f deploy/compose.yaml -f deploy/compose.production.yaml pull
+#   docker compose -f deploy/compose.yaml -f deploy/compose.production.yaml up -d
+#
+# Image tag is pinned via BILIUP_TAG (e.g. BILIUP_TAG=v0.1.0, default: latest).
+
+services:
+  app:
+    image: ghcr.io/paidethon/biliup-organizer:${BILIUP_TAG:-latest}
+    # No `build:` block on purpose. To build locally from the repo root:
+    #   docker buildx build -t ghcr.io/paidethon/biliup-organizer:dev .
+    ports:
+      # Bind to host loopback only — traffic enters through the reverse proxy.
+      - "127.0.0.1:8066:8066"
+    volumes:
+      - ./data:/data
+    env_file:
+      # Resolved next to this compose file (on the server the files live in
+      # /opt/biliup-organizer next to .env). Optional so local validation
+      # passes without a .env present.
+      - path: .env
+        required: false
+    restart: unless-stopped
+    healthcheck:
+      # Mirrors the image HEALTHCHECK (Python stdlib; no curl in the image).
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8066/healthz', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

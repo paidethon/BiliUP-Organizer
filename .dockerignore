@@ -1,0 +1,40 @@
+# Keep the build context minimal and never ship local state or secrets.
+
+# VCS, CI, local tooling state
+.git
+.github
+.gitignore
+.mimosa
+.serena
+.pytest_cache
+.ruff_cache
+.venv
+
+# Local data / docs / dev-only dirs (never baked into the image)
+data
+docs
+deploy
+scripts
+tests
+e2e
+
+# Frontend artifacts rebuilt inside the image
+apps/web/node_modules
+apps/web/dist
+apps/web/test-results
+apps/web/playwright-report
+apps/web/e2e
+apps/web/playwright.config.ts
+apps/web/tsconfig.tsbuildinfo
+
+# Secrets and local files
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+
+# Misc
+**/__pycache__
+**/*.pyc
+*.md
