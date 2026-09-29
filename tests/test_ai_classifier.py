@@ -143,8 +143,12 @@ def test_decide_reject(db) -> None:  # noqa: ANN001
     up = _make_up(db, "AI测试UP七", 910000007)
     db.add(
         AiSuggestion(
-            up_mid=up.mid, suggested_group_name="随意", confidence=0.1,
-            rationale="", model="m", status="pending",
+            up_mid=up.mid,
+            suggested_group_name="随意",
+            confidence=0.1,
+            rationale="",
+            model="m",
+            status="pending",
         )
     )
     db.commit()

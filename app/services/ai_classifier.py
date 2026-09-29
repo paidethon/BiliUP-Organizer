@@ -3,6 +3,7 @@ OpenAI-compatible chat completions endpoint. Owned by the main agent after the
 AI subagent hit the concurrency limit; kept to the frozen contract in the
 original stub docstring.
 """
+
 from __future__ import annotations
 
 import json
@@ -180,11 +181,7 @@ def run_classification(db: Session, batch_size: int = 20) -> dict:
 def decide(db: Session, ids: list[int], decision: str) -> dict:
     if decision not in ("accept", "reject"):
         raise ApiError(400, "bad_request", "decision 必须是 accept 或 reject")
-    rows = (
-        db.query(AiSuggestion)
-        .filter(AiSuggestion.id.in_(ids), AiSuggestion.status == "pending")
-        .all()
-    )
+    rows = db.query(AiSuggestion).filter(AiSuggestion.id.in_(ids), AiSuggestion.status == "pending").all()
     applied = 0
     for row in rows:
         row.status = "accepted" if decision == "accept" else "rejected"
