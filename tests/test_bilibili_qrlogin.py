@@ -24,6 +24,8 @@ os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("ENABLE_SCHEDULER", "0")
 os.environ.setdefault("DATA_DIR", str(Path(tempfile.mkdtemp(prefix="biliup-qrlogin-"))))
 
+from app.services.bilibili.cookies import load_cookies  # noqa: E402
+
 from app.models import Base, BilibiliAccount  # noqa: E402
 from app.services.bilibili import qrlogin as qrlogin_module  # noqa: E402
 from app.services.bilibili.client import (  # noqa: E402
@@ -32,7 +34,6 @@ from app.services.bilibili.client import (  # noqa: E402
     PASSPORT_BASE,
     BiliClient,
 )
-from app.services.bilibili.cookies import load_cookies  # noqa: E402
 
 IMG_KEY = "7cd084941338484aae1ad9425b84077c"
 SUB_KEY = "4932caff0ff746eab6f01bf08b70ac45"
