@@ -1,1 +1,0 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/auth.tsx","./src/main.tsx","./src/components/ui.tsx","./src/pages/Dashboard.tsx","./src/pages/Followings.tsx","./src/pages/Groups.tsx","./src/pages/History.tsx","./src/pages/Login.tsx","./src/pages/Reminders.tsx","./src/pages/Review.tsx","./src/pages/Settings.tsx","./src/pages/WeeklyReport.tsx"],"version":"5.9.3"}

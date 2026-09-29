@@ -39,6 +39,8 @@ coverage/
 playwright-report/
 test-results/
 .e2e-data/
+.playwright-mcp/
+tsconfig.tsbuildinfo
 
 .DS_Store
 Thumbs.db
