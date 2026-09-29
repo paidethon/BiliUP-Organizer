@@ -1,0 +1,35 @@
+# Gitleaks configuration.
+# The only allowlisted findings are the PUBLIC Wbi golden test vectors
+# (img/sub/mixin keys published in the bilibili-API-collect community
+# documentation) appearing in unit tests and the research doc as documented
+# constants. They are not credentials. The allowlist requires BOTH an exact
+# fingerprint (commit:path:rule:line) AND one of the three public constants,
+# so any new real secret is still reported.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Wbi golden test vectors in tests and research docs (not secrets)"
+condition = "and"
+regexTarget = "match"
+regexes = [
+  '''7cd084941338484aae1ad9425b84077c''',
+  '''4932caff0ff746eab6f01bf08b70ac45''',
+  '''ea1db124af3c7062474693fa704f4ff8''',
+]
+fingerprints = [
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_client.py:generic-api-key:40",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_client.py:generic-api-key:41",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_qrlogin.py:generic-api-key:37",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_qrlogin.py:generic-api-key:38",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_wbi.py:generic-api-key:5",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_wbi.py:generic-api-key:26",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_wbi.py:generic-api-key:27",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_wbi.py:generic-api-key:28",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_followings.py:generic-api-key:37",
+  "3ba1fefb4f7d9ec69bc2335bdeb62d3ac8c6e354:tests/test_bilibili_followings.py:generic-api-key:38",
+  "959299ee0055d9007e9a4b85f501c465adcc4a0d:docs/RESEARCH_BILIBILI.md:generic-api-key:116",
+  "959299ee0055d9007e9a4b85f501c465adcc4a0d:docs/RESEARCH_BILIBILI.md:generic-api-key:116",
+  "959299ee0055d9007e9a4b85f501c465adcc4a0d:docs/RESEARCH_BILIBILI.md:generic-api-key:116",
+]
