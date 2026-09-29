@@ -14,10 +14,10 @@ logs/
 backups/
 reports/private/
 
-# credentials — never commit
-credentials*
-secrets*
-cookies*
+# credentials — never commit (root-anchored so source files named cookies.py are fine)
+/credentials*
+/secrets*
+/cookies*
 *.pem
 *.key
 id_rsa*
