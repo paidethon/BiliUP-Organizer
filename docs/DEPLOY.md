@@ -17,7 +17,13 @@ Development, tests, scans and image builds happen locally in WSL / GitHub Action
 ## First deployment
 
 1. Push a tag (e.g. `v0.1.0`) → GitHub Actions builds and publishes
-   `ghcr.io/<owner>/biliup-organizer:<tag>` after CI is green.
+   `ghcr.io/paidethon/biliup-organizer:<tag>` after CI is green.
+   - The GHCR package is **private by default**. To use `docker compose pull`
+     on the server, flip the package to public once (GitHub → your profile →
+     Packages → biliup-organizer → Package settings → Change visibility), or
+     `docker login ghcr.io` with a PAT that has `read:packages`.
+   - Alternatively the release workflow also uploads the image as a
+     `image-latest` Actions artifact: download, `gunzip`, `docker load`.
 2. On the server: create `/opt/biliup-organizer`, copy the two compose files,
    create `.env` (umask 077, chmod 600) with:
    - `APP_ENV=production`
