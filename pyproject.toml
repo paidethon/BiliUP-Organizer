@@ -1,0 +1,54 @@
+[project]
+name = "biliup-organizer"
+version = "0.1.0"
+description = "Self-hosted Bilibili following organizer with smart classification, reminders, weekly reports and LumiRSS integration."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "BiliUP Organizer contributors" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "apscheduler>=3.10,<4",
+    "jinja2>=3.1",
+    "aiosmtplib>=3.0",
+    "argon2-cffi>=23.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+biliup-organizer = "app.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = ["apps/web", "e2e", "node_modules", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults is idiomatic
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

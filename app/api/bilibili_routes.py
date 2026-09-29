@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import json
+import threading
+
+from fastapi import APIRouter, Query
+
+from app.api.deps import CurrentAdmin, DbSession
+from app.audit import log_action
+from app.auth import get_bilibili_account
+from app.config import get_settings
+from app.db import get_session_factory
+from app.demo import bilibili_account_stub
+from app.demo import qr_poll as demo_qr_poll
+from app.demo import qr_start as demo_qr_start
+from app.errors import bad_request
+from app.models import BilibiliAccount, NativeGroupMap, SyncRun
+from app.schemas import (
+    BilibiliAccountOut,
+    CookieIn,
+    NativeGroupOut,
+    NativePushIn,
+    QrPollOut,
+    QrStartOut,
+    SyncRunIn,
+    SyncRunOut,
+)
+from app.util import utcnow
+
+router = APIRouter(prefix="/bilibili", tags=["bilibili"])
+
+
+def _account_out(account: BilibiliAccount) -> BilibiliAccountOut:
+    masked = ""
+    if account.cookie_json:
+        try:
+            cookie: dict = json.loads(account.cookie_json)
+            masked = "; ".join(f"{k}=••••" for k in cookie)
+        except json.JSONDecodeError:
+            masked = "••••"
+    return BilibiliAccountOut(
+        login_status=account.login_status,
+        mid=account.mid,
+        uname=account.uname,
+        avatar=account.avatar,
+        cookie_updated_at=account.cookie_updated_at,
+        risk_flag=account.risk_flag,
+        cookie_masked=masked,
+    )
+
+
+@router.get("/account", response_model=BilibiliAccountOut)
+def get_account(db: DbSession) -> BilibiliAccountOut:
+    if get_settings().demo_mode:
+        return bilibili_account_stub()
+    return _account_out(get_bilibili_account(db))
+
+
+@router.post("/qr/start", response_model=QrStartOut)
+def qr_start(admin: CurrentAdmin, db: DbSession) -> QrStartOut:
+    settings = get_settings()
+    if settings.demo_mode:
+        return QrStartOut(**demo_qr_start())
+    from app.services.bilibili.qrlogin import start_login
+
+    data = start_login(db)
+    log_action(db, admin.username, "bilibili.qr_start")
+    return QrStartOut(**data)
+
+
+@router.get("/qr/poll", response_model=QrPollOut)
+def qr_poll(admin: CurrentAdmin, qrcode_key: str = Query(min_length=1), db: DbSession = None) -> QrPollOut:  # type: ignore[assignment]
+    settings = get_settings()
+    if settings.demo_mode:
+        return QrPollOut(**demo_qr_poll())
+    from app.services.bilibili.qrlogin import poll_login
+
+    result = poll_login(db, qrcode_key)
+    if result["status"] == "confirmed":
+        log_action(db, admin.username, "bilibili.qr_confirmed")
+    return QrPollOut(**result)
+
+
+@router.post("/cookie", response_model=BilibiliAccountOut)
+def set_cookie(payload: CookieIn, admin: CurrentAdmin, db: DbSession) -> BilibiliAccountOut:
+    cookie: dict[str, str] = {}
+    for part in payload.cookie.replace("\n", "; ").split(";"):
+        if "=" in part:
+            k, _, v = part.strip().partition("=")
+            if k:
+                cookie[k] = v
+    if not cookie.get("SESSDATA"):
+        raise bad_request("cookie must contain SESSDATA")
+    account = get_bilibili_account(db)
+    account.cookie_json = json.dumps(cookie)
+    account.cookie_updated_at = utcnow()
+    account.login_status = "active"
+    account.risk_flag = False
+    if cookie.get("DedeUserID"):
+        account.mid = int(cookie["DedeUserID"])
+    db.commit()
+    log_action(db, admin.username, "bilibili.cookie_set", entity_type="bilibili_account")
+    return _account_out(account)
+
+
+@router.post("/logout", response_model=BilibiliAccountOut)
+def bilibili_logout(admin: CurrentAdmin, db: DbSession) -> BilibiliAccountOut:
+    account = get_bilibili_account(db)
+    account.cookie_json = None
+    account.cookie_updated_at = None
+    account.login_status = "none"
+    db.commit()
+    log_action(db, admin.username, "bilibili.logout")
+    return _account_out(account)
+
+
+@router.post("/sync/run", response_model=SyncRunOut)
+def run_sync(payload: SyncRunIn, admin: CurrentAdmin, db: DbSession) -> SyncRunOut:
+    if payload.kind not in ("followings", "watch_history", "full", "native_groups"):
+        raise bad_request("unknown sync kind")
+    settings = get_settings()
+    if settings.demo_mode:
+        run = SyncRun(
+            kind=payload.kind,
+            status="success",
+            finished_at=utcnow(),
+            stats_json='{"total": 24, "new": 1, "demo": true}',
+        )
+        db.add(run)
+        db.commit()
+        return SyncRunOut(
+            id=run.id,
+            kind=run.kind,
+            status=run.status,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+        )
+    run = SyncRun(kind=payload.kind, status="running")
+    db.add(run)
+    db.commit()
+    log_action(
+        db,
+        admin.username,
+        "sync.run",
+        entity_type="sync_run",
+        entity_id=run.id,
+        detail={"kind": payload.kind},
+    )
+
+    def _worker(run_id: int) -> None:
+        from app.services import sync as sync_service
+
+        session = get_session_factory()()
+        try:
+            stats = sync_service.run_sync_kind(session, payload.kind)
+            run_row = session.get(SyncRun, run_id)
+            if run_row is not None:
+                run_row.status = "success"
+                run_row.stats_json = json.dumps(stats, ensure_ascii=False)
+                run_row.finished_at = utcnow()
+                session.commit()
+        except Exception as exc:
+            session.rollback()
+            run_row = session.get(SyncRun, run_id)
+            if run_row is not None:
+                run_row.status = "failed"
+                run_row.error = str(exc)[:2000]
+                run_row.finished_at = utcnow()
+                session.commit()
+        finally:
+            session.close()
+
+    threading.Thread(target=_worker, args=(run.id,), daemon=True, name=f"sync-{run.id}").start()
+    return SyncRunOut(id=run.id, kind=run.kind, status=run.status, started_at=run.started_at)
+
+
+@router.get("/sync/runs", response_model=list[SyncRunOut])
+def list_runs(
+    admin: CurrentAdmin, limit: int = Query(default=20, le=100), db: DbSession = None
+) -> list[SyncRunOut]:  # type: ignore[assignment]
+    rows = db.query(SyncRun).order_by(SyncRun.id.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        stats = None
+        if r.stats_json:
+            try:
+                stats = json.loads(r.stats_json)
+            except json.JSONDecodeError:
+                stats = None
+        out.append(
+            SyncRunOut(
+                id=r.id,
+                kind=r.kind,
+                status=r.status,
+                started_at=r.started_at,
+                finished_at=r.finished_at,
+                stats=stats,
+                error=r.error,
+            )
+        )
+    return out
+
+
+@router.get("/native-groups", response_model=list[NativeGroupOut])
+def list_native_groups(db: DbSession) -> list[NativeGroupOut]:
+    rows = db.query(NativeGroupMap).order_by(NativeGroupMap.bili_tag_name).all()
+    return [NativeGroupOut.model_validate(r) for r in rows]
+
+
+@router.post("/native-groups/sync", response_model=list[NativeGroupOut])
+def sync_native_groups(admin: CurrentAdmin, db: DbSession) -> list[NativeGroupOut]:
+    if get_settings().demo_mode:
+        return [
+            NativeGroupOut(bili_tag_id=1, bili_tag_name="默认分组", local_group_id=None, synced_at=utcnow())
+        ]
+    from app.services import sync as sync_service
+
+    sync_service.run_sync_kind(db, "native_groups")
+    log_action(db, admin.username, "bilibili.native_groups_sync")
+    return list_native_groups(db)
+
+
+@router.post("/native-groups/push")
+def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession) -> dict:
+    if get_settings().demo_mode:
+        return {"ok": True, "added": len(payload.mids), "demo": True}
+    from app.services.bilibili.native_groups import add_users_to_tag
+
+    added = add_users_to_tag(db, payload.tag_id, payload.mids)
+    log_action(
+        db,
+        admin.username,
+        "bilibili.native_groups_push",
+        detail={"tag_id": payload.tag_id, "count": len(payload.mids)},
+    )
+    return {"ok": True, "added": added}

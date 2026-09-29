@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+:root {
+  --lumi-bg: #0b0e14;
+  --lumi-surface: #11151f;
+  --lumi-border: #1e2635;
+  --lumi-text: #e6eaf2;
+  --lumi-muted: #8b94a7;
+  --lumi-accent: #6366f1;
+  --lumi-accent-2: #22d3ee;
+  --lumi-ok: #34d399;
+  --lumi-warn: #fbbf24;
+  --lumi-danger: #f87171;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--lumi-bg);
+  color: var(--lumi-text);
+  font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.surface {
+  background: var(--lumi-surface);
+  border: 1px solid var(--lumi-border);
+  border-radius: 12px;
+}
+
+.glow {
+  box-shadow: 0 0 24px rgba(99, 102, 241, 0.15);
+}
+
+input, select, textarea, button {
+  font: inherit;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a3346; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
