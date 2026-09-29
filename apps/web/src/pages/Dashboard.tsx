@@ -35,7 +35,8 @@ export default function Dashboard() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => api<{ id: number; status: string }>("/sync/run", { method: "POST", body: { kind: "full" } }),
+    mutationFn: () =>
+      api<{ id: number; status: string }>("/bilibili/sync/run", { method: "POST", body: { kind: "full" } }),
     onSuccess: () => queryClient.invalidateQueries(),
   });
 
