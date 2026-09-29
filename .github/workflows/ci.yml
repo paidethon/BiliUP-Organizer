@@ -31,10 +31,10 @@ jobs:
           python-version: "3.12"
       - name: Sync dependencies
         run: uv sync --frozen
-      - name: Ruff lint
-        run: uv run ruff check .
-      - name: Ruff format check
-        run: uv run ruff format --check .
+      - name: Ruff lint (pinned to the locked version for determinism)
+        run: uvx ruff==0.16.9 check .
+      - name: Ruff format check (pinned)
+        run: uvx ruff==0.16.9 format --check .
       - name: Pytest
         run: uv run pytest -q
 
@@ -122,13 +122,12 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Trivy (pinned; trivy-action internally references a removed action)
+        run: |
+          curl -sSLo /tmp/trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tgz -C /tmp trivy
       - name: Trivy (fs)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: fs
-          scanners: vuln,secret,misconfig
-          severity: CRITICAL,HIGH
-          exit-code: "1"
+        run: /tmp/trivy fs --scanners vuln,secret,misconfig --severity CRITICAL,HIGH --exit-code 1 .
       - name: OSV-Scanner (source)
         id: osv
         # Transitive-dependency findings must not block CI; the step below
