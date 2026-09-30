@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type Group } from "../api";
 import { Button, Card, EmptyState, ErrorState, Spinner } from "../components/ui";
@@ -60,24 +60,51 @@ export default function Groups() {
   });
 
   const reorderMutation = useMutation({
-    mutationFn: (vars: { a: { id: number; sort_order: number }; b: { id: number; sort_order: number } }) =>
-      Promise.all([
-        api(`/groups/${vars.a.id}`, { method: "PATCH", body: { sort_order: vars.a.sort_order } }),
-        api(`/groups/${vars.b.id}`, { method: "PATCH", body: { sort_order: vars.b.sort_order } }),
-      ]),
+    mutationFn: (updates: { id: number; sort_order: number }[]) =>
+      Promise.all(
+        updates.map((u) => api(`/groups/${u.id}`, { method: "PATCH", body: { sort_order: u.sort_order } })),
+      ),
     onSuccess: () => invalidate(),
   });
 
-  function move(index: number, dir: -1 | 1) {
+  // Drag & drop reorder: the visible number badge is derived from the display
+  // index only — group names are never touched.
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  function commitOrder(list: Group[]) {
+    const updates = list
+      .map((g, i) => ({ id: g.id, sort_order: i + 1 }))
+      .filter((u, i) => list[i].sort_order !== u.sort_order);
+    if (!updates.length) return;
+    // optimistic: renumber the cached list so the badges move instantly
+    queryClient.setQueryData<{ id: number; sort_order: number }[]>(["groups"], (old) =>
+      old ? old.map((g) => ({ ...g, sort_order: (list.find((x) => x.id === g.id) as Group).sort_order })) : old,
+    );
+    reorderMutation.mutate(updates);
+  }
+
+  function handleDrop(targetIndex: number) {
     const list = data ?? [];
+    if (dragIndex == null || dragIndex === targetIndex || !list.length) return;
+    const next = [...list];
+    const [moved] = next.splice(dragIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setDragIndex(null);
+    setOverIndex(null);
+    commitOrder(next);
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent, index: number) {
+    // keyboard fallback for reorder (accessibility / touch-free devices)
+    const dir = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+    if (!dir || !event.altKey || !data) return;
+    event.preventDefault();
     const other = index + dir;
-    if (other < 0 || other >= list.length) return;
-    const current = list[index];
-    const neighbor = list[other];
-    reorderMutation.mutate({
-      a: { id: current.id, sort_order: neighbor.sort_order },
-      b: { id: neighbor.id, sort_order: current.sort_order },
-    });
+    if (other < 0 || other >= data.length) return;
+    const next = [...data];
+    [next[index], next[other]] = [next[other], next[index]];
+    commitOrder(next);
   }
 
   function submitForm(values: GroupFormValues) {
@@ -113,6 +140,7 @@ export default function Groups() {
       </header>
 
       <p className="text-xs text-slate-500">
+        拖动卡片（或聚焦后按 Alt+↑/↓）调整分组顺序，序号仅为显示顺序，不会写入分组名称；
         本地分组仅保存在本站，用于筛选、提醒与 AI 建议审核，不会改动 B 站侧的关注列表；
         如需同步到 B 站原生标签，请在「设置」中配置原生分组同步。
       </p>
@@ -126,14 +154,43 @@ export default function Groups() {
       {data && data.length > 0 && (
         <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" aria-label="分组列表">
           {data.map((g, index) => (
-            <li key={g.id}>
+            <li
+              key={g.id}
+              draggable
+              onDragStart={(e) => {
+                setDragIndex(index);
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", String(index));
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setOverIndex(index);
+              }}
+              onDragLeave={() => setOverIndex((prev) => (prev === index ? null : prev))}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleDrop(index);
+              }}
+              onDragEnd={() => {
+                setDragIndex(null);
+                setOverIndex(null);
+              }}
+              onKeyDown={(e) => handleKeyDown(e, index)}
+              tabIndex={0}
+              aria-label={`第 ${index + 1} 位：分组 ${g.name}，可拖动排序`}
+              className={`cursor-grab active:cursor-grabbing rounded-[var(--lumi-radius)] outline-none transition-[box-shadow,opacity] focus-visible:ring-2 focus-visible:ring-indigo-400 ${
+                dragIndex === index ? "opacity-40" : ""
+              } ${overIndex === index && dragIndex !== null && dragIndex !== index ? "ring-2 ring-indigo-400 ring-offset-0" : ""}`}
+            >
               <Card className="h-full flex flex-col gap-2">
                 <div className="flex items-center gap-2">
                   <span
                     aria-hidden="true"
-                    className="w-3 h-3 rounded-full shrink-0"
-                    style={{ backgroundColor: g.color }}
-                  />
+                    className="shrink-0 min-w-6 h-6 px-1 inline-flex items-center justify-center rounded-md text-xs font-bold text-white tabular-nums btn-grad"
+                  >
+                    {index + 1}
+                  </span>
                   <h2 className="font-medium truncate">{g.name}</h2>
                   {g.is_important && (
                     <span title="重要分组" aria-label="重要分组" className="text-amber-300">
@@ -148,22 +205,6 @@ export default function Groups() {
                   <p className="text-xs text-slate-600">暂无描述</p>
                 )}
                 <div className="mt-auto flex items-center gap-2 pt-1">
-                  <Button
-                    variant="ghost"
-                    onClick={() => move(index, -1)}
-                    disabled={index === 0 || reorderMutation.isPending}
-                    aria-label={`上移分组 ${g.name}`}
-                  >
-                    ↑
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => move(index, 1)}
-                    disabled={index === data.length - 1 || reorderMutation.isPending}
-                    aria-label={`下移分组 ${g.name}`}
-                  >
-                    ↓
-                  </Button>
                   <Button
                     variant="ghost"
                     onClick={() => {
