@@ -38,7 +38,7 @@ test.describe("关注管理", () => {
 
   test("筛选从未观看后仅剩 watched=0 的 UP", async ({ page }) => {
     await openFollowings(page);
-    await page.getByLabel("按状态筛选").selectOption({ label: "从未观看" });
+    await page.getByRole("group", { name: "状态筛选" }).getByRole("button", { name: "从未观看" }).click();
     await expect(page.getByText("共 3 个 UP 主")).toBeVisible();
     const names = ["吕永汉", "早睡早起冠军", "新关注的UP"];
     for (const name of names) {
