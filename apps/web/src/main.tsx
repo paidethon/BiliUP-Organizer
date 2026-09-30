@@ -5,6 +5,10 @@ import { BrowserRouter } from "react-router-dom";
 import "./theme.css";
 import App from "./App";
 import { AuthProvider, queryClient } from "./auth";
+import { initTheme } from "./theme";
+
+// Resolve the stored theme before React paints (CSP forbids inline scripts).
+initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

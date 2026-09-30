@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
 import { EmptyState, ErrorState, Spinner } from "../components/ui";
 import { SectionCard } from "../components/settings/SectionCard";
+import { AppearanceSection } from "../components/settings/AppearanceSection";
 import {
   AiSectionForm,
   LumirssSectionForm,
@@ -80,6 +81,7 @@ export default function Settings() {
 
       {data && (
         <div className="space-y-3">
+          <AppearanceSection />
           <SectionCard title="AI 分类" description="OpenAI 兼容接口，为未分组 UP 生成归类建议" configured={data.ai?.configured}>
             <AiSectionForm value={data.ai} {...formProps("ai")} />
           </SectionCard>

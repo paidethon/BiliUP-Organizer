@@ -33,10 +33,11 @@ function Shell() {
       <aside className="w-52 shrink-0 border-r border-slate-800 bg-slate-950/60 hidden md:flex flex-col">
         <div className="px-4 py-5">
           <p className="text-base font-bold tracking-wide">
-            BiliUP <span className="text-indigo-400">Organizer</span>
+            BiliUP <span className="brand-grad">Organizer</span>
           </p>
+          <div className="brand-rule mt-2 w-10" aria-hidden="true" />
           {demoMode && (
-            <span className="mt-1 inline-block px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-300">
+            <span className="mt-2 inline-block px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-300">
               演示模式
             </span>
           )}

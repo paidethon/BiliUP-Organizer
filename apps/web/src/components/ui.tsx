@@ -6,7 +6,7 @@ export function Button({
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "danger" | "subtle" }) {
   const styles: Record<string, string> = {
-    primary: "bg-indigo-500 hover:bg-indigo-400 text-white",
+    primary: "btn-grad text-white hover:brightness-110",
     ghost: "bg-transparent hover:bg-white/5 text-slate-200 border border-slate-700",
     subtle: "bg-slate-800 hover:bg-slate-700 text-slate-200",
     danger: "bg-red-500/90 hover:bg-red-500 text-white",
