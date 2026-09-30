@@ -189,9 +189,21 @@ def _chat(base_url: str, api_key: str, model: str, prompt: str, system: str | No
     raise last_exc
 
 
+# bilibili caps follow tags at 20; past the cap new names fall back instead
+# of creating a tag that upstream sync could not recreate
+_GROUP_CAP = 20
+
+
 def _ensure_group(db: Session, name: str) -> GroupLocal:
     group = db.query(GroupLocal).filter(GroupLocal.name == name).first()
     if group is None:
+        if db.query(GroupLocal).count() >= _GROUP_CAP:
+            fallback = (
+                db.query(GroupLocal).filter(GroupLocal.name == "其他").first()
+                or db.query(GroupLocal).order_by(GroupLocal.id).first()
+            )
+            log.warning("group cap reached; mapping %r to %r", name, fallback.name if fallback else None)
+            return fallback
         group = GroupLocal(name=name[:64])
         db.add(group)
         db.flush()

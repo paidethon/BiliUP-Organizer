@@ -236,6 +236,28 @@ def test_fetch_latest_archive_none_when_no_uploads(logged_in_db: Session, client
 
 
 @respx.mock
+def test_fetch_recent_archives_dedupes_cross_up_bvids(logged_in_db: Session, client: BiliClient) -> None:
+    """同一个 bvid 可能出现在多个 UP 的投稿列表（联创/转载）；落库必须全局去重。"""
+    from app.models import Video
+
+    mock_nav()
+    shared = {"bvid": "BV1dup", "title": "联合创作", "tname": "科技", "created": 1700000000, "length": "5:00"}
+    respx.get(f"{API_BASE}/x/space/wbi/arc/search").mock(
+        return_value=envelope(
+            {
+                "list": {"vlist": [shared, {"bvid": "BV1own", "title": "本命稿件", "created": 1699000000}]},
+                "page": {"count": 2},
+            }
+        )
+    )
+    refreshed = followings_module.fetch_recent_archives(logged_in_db, [101, 102], client=client)
+    assert refreshed == 2
+    rows = logged_in_db.query(Video).all()
+    assert {r.bvid for r in rows} == {"BV1dup", "BV1own"}
+    assert logged_in_db.query(Video).filter(Video.bvid == "BV1dup").count() == 1
+
+
+@respx.mock
 def test_fetch_history_maps_and_filters(logged_in_db: Session, client: BiliClient) -> None:
     respx.get(f"{API_BASE}/x/web-interface/history/search").mock(
         return_value=envelope(

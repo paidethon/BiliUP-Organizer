@@ -4,6 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.services.bilibili.client import API_BASE, HISTORY_PAGE_SIZE
@@ -129,7 +130,12 @@ def fetch_recent_archives(
             except BiliError as exc:
                 log.warning("archives fetch failed for mid %s: %s", mid, exc)
                 continue
-            _store_archives(db, mid, vlist[:per_up])
+            try:
+                _store_archives(db, mid, vlist[:per_up])
+            except IntegrityError as exc:
+                db.rollback()
+                log.warning("archives store failed for mid %s: %s", mid, exc)
+                continue
             refreshed += 1
     finally:
         if own:
@@ -139,10 +145,17 @@ def fetch_recent_archives(
 
 
 def _store_archives(db: Session, mid: int, vlist: list[dict]) -> None:
-    """Upsert archive rows into videos and refresh the UP's last-video fields."""
+    """Upsert archive rows into videos and refresh the UP's last-video fields.
+
+    bvid is unique across the whole table — different UPs' upload lists can
+    contain the same entry (cross-UP collabs, reposts), so dedupe by bvid
+    globally, not just within this UP.
+    """
     from app.models import UpUser, Video
 
-    existing = {row.bvid: row for row in db.query(Video).filter(Video.up_mid == mid).all()}
+    bvids = [str(arc.get("bvid") or "") for arc in vlist]
+    bvids = [b for b in bvids if b]
+    existing = {row.bvid: row for row in db.query(Video).filter(Video.bvid.in_(bvids)).all()} if bvids else {}
     latest = vlist[0] if vlist else None
     for arc in vlist:
         bvid = str(arc.get("bvid") or "")
@@ -165,10 +178,11 @@ def _store_archives(db: Session, mid: int, vlist: list[dict]) -> None:
                 )
             )
         else:
-            row.title = title or row.title
-            row.tname = tname or row.tname
-            row.pubdate = pubdate or row.pubdate
-            row.duration = length or row.duration
+            if row.up_mid == mid:
+                row.title = title or row.title
+                row.tname = tname or row.tname
+                row.pubdate = pubdate or row.pubdate
+                row.duration = length or row.duration
     if latest is not None:
         up = db.query(UpUser).filter(UpUser.mid == mid).first()
         if up is not None:
