@@ -74,8 +74,14 @@ def run_review(payload: ReviewRunIn, admin: CurrentAdmin, db: DbSession) -> dict
 
         return review_run(payload.batch_size)
     from app.services.ai_classifier import run_classification
+    from app.services.settings_store import get_section_raw
 
-    stats = run_classification(db, payload.batch_size)
+    instruction = payload.instruction.strip()
+    if not instruction:
+        # fall back to the saved grouping guidance so the review page can send
+        # one-off requirements while the settings page keeps a standing one
+        instruction = str(get_section_raw(db, "ai").get("grouping_instructions") or "").strip()
+    stats = run_classification(db, payload.batch_size, instruction=instruction)
     log_action(db, admin.username, "review.run", detail=stats)
     return stats
 

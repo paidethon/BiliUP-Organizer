@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
 import { Badge, Button, Card, EmptyState, ErrorState, Spinner } from "../components/ui";
+import { AreaChart, BarChart, Donut, HBars } from "../components/charts";
 import { formatDate, relativeTime } from "../components/followings/helpers";
 
 interface ReportPayload {
@@ -18,6 +19,17 @@ interface StatsPayload {
   daily: { date: string; views: number; seconds: number }[];
   by_group: { name: string; views: number; seconds: number }[];
   top_ups: { uname: string; views: number; seconds: number }[];
+  hourly: number[];
+  weekday: { label: string; value: number }[];
+  duration_buckets: { label: string; value: number }[];
+  completion_buckets: { label: string; value: number }[];
+  tname_top: { name: string; views: number }[];
+  daily_30: { date: string; views: number }[];
+  cumulative: { date: string; views: number; total: number }[];
+  follow_trend: { month: string; count: number }[];
+  top5_share: number;
+  never_watched_ratio: number;
+  group_completion: { name: string; ratio: number }[];
 }
 
 function humanDuration(seconds: number): string {
@@ -32,38 +44,12 @@ function errText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
 }
 
-/** Minimal inline SVG bar chart — no chart library, no extra bundle weight. */
-function DailyBars({ daily }: { daily: StatsPayload["daily"] }) {
-  if (!daily.length) return <p className="text-xs text-slate-500">本窗口暂无观看记录</p>;
-  const max = Math.max(...daily.map((d) => d.views), 1);
-  const width = Math.max(280, daily.length * 44);
-  const height = 120;
-  const barW = 24;
-  const gap = (width - daily.length * barW) / (daily.length + 1);
+function ChartCard({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <svg role="img" aria-label="每日观看次数柱状图" className="w-full max-w-full" viewBox={`0 0 ${width} ${height}`}>
-      {daily.map((d, i) => {
-        const h = Math.max(3, (d.views / max) * (height - 36));
-        const x = gap + i * (barW + gap);
-        return (
-          <g key={d.date}>
-            <rect x={x} y={height - 20 - h} width={barW} height={h} rx={4} fill="url(#weekly-grad)" />
-            <text x={x + barW / 2} y={height - 24 - h} textAnchor="middle" className="fill-slate-400" fontSize="10">
-              {d.views}
-            </text>
-            <text x={x + barW / 2} y={height - 6} textAnchor="middle" className="fill-slate-500" fontSize="10">
-              {d.date.slice(5)}
-            </text>
-          </g>
-        );
-      })}
-      <defs>
-        <linearGradient id="weekly-grad" x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0%" stopColor="#ff2f7e" />
-          <stop offset="100%" stopColor="#ff8ac2" />
-        </linearGradient>
-      </defs>
-    </svg>
+    <Card>
+      <h2 className="text-sm font-semibold mb-3">{title}</h2>
+      {children}
+    </Card>
   );
 }
 
@@ -93,7 +79,8 @@ export default function WeeklyReport() {
   });
 
   const aiMutation = useMutation({
-    mutationFn: () => api<{ ok: boolean; html: string; fallback: boolean; message: string }>("/weekly-report/ai", { method: "POST" }),
+    mutationFn: () =>
+      api<{ ok: boolean; html: string; fallback: boolean; message: string }>("/weekly-report/ai", { method: "POST" }),
     onSuccess: (res) => {
       setAiPreview({ generated_at: null, html: res.html });
       setPreview(null);
@@ -131,12 +118,7 @@ export default function WeeklyReport() {
               {errText(previewMutation.error ?? sendMutation.error ?? aiMutation.error, "操作失败")}
             </span>
           )}
-          <Button
-            variant="ghost"
-            onClick={() => aiMutation.mutate()}
-            disabled={aiMutation.isPending}
-            aria-label="生成 AI 分析周报"
-          >
+          <Button variant="ghost" onClick={() => aiMutation.mutate()} disabled={aiMutation.isPending} aria-label="生成 AI 分析周报">
             {aiMutation.isPending ? "AI 分析中…" : "AI 分析"}
           </Button>
           <Button
@@ -199,42 +181,65 @@ export default function WeeklyReport() {
               <p className="text-2xl font-bold mt-1 tabular-nums">{stats.new_videos}</p>
             </Card>
           </div>
+
+          {/* 12 张图表：2 张由原数据换用新组件重绘，10 张为新增 */}
           <div className="grid gap-3 md:grid-cols-2">
-            <Card>
-              <h2 className="text-sm font-semibold mb-2">每日观看（近 {stats.days} 天）</h2>
-              <DailyBars daily={stats.daily} />
-            </Card>
-            <Card>
-              <h2 className="text-sm font-semibold mb-2">分组偏好</h2>
-              {stats.by_group.length ? (
-                <ul className="space-y-1.5 text-sm">
-                  {stats.by_group.map((g) => (
-                    <li key={g.name} className="flex items-center gap-2">
-                      <span className="w-24 shrink-0 truncate text-slate-300">{g.name}</span>
-                      <span className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden" aria-hidden="true">
-                        <span
-                          className="block h-full rounded-full btn-grad"
-                          style={{ width: `${Math.max(4, (g.views / Math.max(...stats.by_group.map((x) => x.views), 1)) * 100)}%` }}
-                        />
-                      </span>
-                      <span className="text-xs text-slate-500 tabular-nums w-20 text-right">
-                        {g.views} 次 · {humanDuration(g.seconds)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-xs text-slate-500">暂无分组观看数据</p>
-              )}
-              {stats.top_ups.length > 0 && (
-                <>
-                  <h3 className="text-sm font-semibold mt-4 mb-1">最常看的 UP</h3>
-                  <p className="text-xs text-slate-400">
-                    {stats.top_ups.map((up) => `${up.uname}（${up.views}）`).join("、")}
-                  </p>
-                </>
-              )}
-            </Card>
+            <ChartCard title={`每日观看（近 ${stats.days} 天）`}>
+              <BarChart points={stats.daily.map((d) => ({ label: d.date.slice(5), value: d.views }))} />
+            </ChartCard>
+            <ChartCard title="近 30 天累计观看">
+              <AreaChart points={stats.cumulative.map((d) => ({ label: d.date.slice(5), value: d.total }))} />
+            </ChartCard>
+            <ChartCard title="观看时段分布（UTC+8）">
+              <BarChart
+                points={stats.hourly.map((v, h) => ({ label: h % 3 === 0 ? `${h}时` : "", value: v }))}
+                height={160}
+              />
+            </ChartCard>
+            <ChartCard title="星期分布">
+              <BarChart points={stats.weekday} />
+            </ChartCard>
+            <ChartCard title="视频时长分布">
+              <HBars points={stats.duration_buckets} unit=" 次" />
+            </ChartCard>
+            <ChartCard title="观看完成率分布">
+              <HBars points={stats.completion_buckets} unit=" 次" />
+            </ChartCard>
+            <ChartCard title="内容分区 TOP（B站分区）">
+              <HBars points={stats.tname_top.map((t) => ({ label: t.name, value: t.views }))} />
+            </ChartCard>
+            <ChartCard title="本地分组偏好">
+              <HBars points={stats.by_group.map((g) => ({ label: g.name, value: g.views }))} />
+            </ChartCard>
+            <ChartCard title="TOP5 UP 观看集中度">
+              <Donut
+                segments={[
+                  { label: "TOP5 UP", value: Math.round(stats.top5_share * 100) },
+                  { label: "其余", value: 100 - Math.round(stats.top5_share * 100) },
+                ]}
+                centerValue={`${Math.round(stats.top5_share * 100)}%`}
+                centerLabel="TOP5 占比"
+              />
+            </ChartCard>
+            <ChartCard title="关注后从未观看占比（30 天前关注）">
+              <Donut
+                segments={[
+                  { label: "从未观看", value: Math.round(stats.never_watched_ratio * 100) },
+                  { label: "已观看", value: 100 - Math.round(stats.never_watched_ratio * 100) },
+                ]}
+                centerValue={`${Math.round(stats.never_watched_ratio * 100)}%`}
+                centerLabel="从未观看"
+              />
+            </ChartCard>
+            <ChartCard title="分组平均完成率">
+              <HBars
+                points={stats.group_completion.map((g) => ({ label: g.name, value: Math.round(g.ratio * 100) }))}
+                unit="%"
+              />
+            </ChartCard>
+            <ChartCard title="关注增长趋势（按月）">
+              <BarChart points={stats.follow_trend.map((f) => ({ label: f.month.slice(2), value: f.count }))} />
+            </ChartCard>
           </div>
         </section>
       )}

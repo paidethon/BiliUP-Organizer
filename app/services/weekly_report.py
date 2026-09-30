@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.models import GroupLocal, Reminder, UpUser, Video, WatchHistory
@@ -37,6 +37,35 @@ _WATCH_SECONDS = func.coalesce(
 
 def _fmt(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# UTC+8 wall clock for hour/weekday breakdowns (bilibili audiences are CN-based)
+_CN_HOUR = func.substr(func.datetime(WatchHistory.view_at, "+8 hours"), 12, 2)
+_CN_WEEKDAY = func.strftime("%w", func.datetime(WatchHistory.view_at, "+8 hours"))
+# single-video length buckets, seconds
+_DURATION_BUCKET = case(
+    (WatchHistory.duration_seconds <= 300, "≤5分钟"),
+    (WatchHistory.duration_seconds <= 900, "5-15分钟"),
+    (WatchHistory.duration_seconds <= 1800, "15-30分钟"),
+    (WatchHistory.duration_seconds <= 3600, "30-60分钟"),
+    else_="60分钟以上",
+)
+# watch completion ratio: progress=-1 means finished; bounded by duration
+_COMPLETION_RATIO = case(
+    (WatchHistory.progress == -1, 1.0),
+    (
+        WatchHistory.duration_seconds > 0,
+        func.min(WatchHistory.progress, WatchHistory.duration_seconds) * 1.0 / WatchHistory.duration_seconds,
+    ),
+    else_=None,
+)
+_COMPLETION_BUCKET = case(
+    (_COMPLETION_RATIO < 0.25, "0-25%"),
+    (_COMPLETION_RATIO < 0.5, "25-50%"),
+    (_COMPLETION_RATIO < 0.75, "50-75%"),
+    (_COMPLETION_RATIO < 1.0, "75-99%"),
+    else_="看完",
+)
 
 
 def build_stats(db: Session, days: int = 7) -> dict:
@@ -100,6 +129,111 @@ def build_stats(db: Session, days: int = 7) -> dict:
         for uname, views, seconds in up_rows
     ]
 
+    # ---- chart data for the report page (10 additional aggregations) ----
+
+    hourly = [0] * 24
+    for hour, count in scoped.with_entities(_CN_HOUR, func.count()).group_by(_CN_HOUR).all():
+        if hour is not None and str(hour).isdigit():
+            hourly[int(hour)] = int(count)
+
+    weekday_names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+    weekday_rows = dict(scoped.with_entities(_CN_WEEKDAY, func.count()).group_by(_CN_WEEKDAY).all())
+    weekday = [
+        {"label": weekday_names[int(index)], "value": int(weekday_rows.get(index, 0))}
+        for index in ["1", "2", "3", "4", "5", "6", "0"]  # 周一..周日
+    ]
+
+    duration_labels = ["≤5分钟", "5-15分钟", "15-30分钟", "30-60分钟", "60分钟以上"]
+    duration_rows = dict(
+        scoped.filter(WatchHistory.duration_seconds > 0)
+        .with_entities(_DURATION_BUCKET, func.count())
+        .group_by(_DURATION_BUCKET)
+        .all()
+    )
+    duration_buckets = [
+        {"label": label, "value": int(duration_rows.get(label, 0))} for label in duration_labels
+    ]
+
+    completion_labels = ["0-25%", "25-50%", "50-75%", "75-99%", "看完"]
+    completion_rows = dict(
+        scoped.filter((WatchHistory.progress == -1) | (WatchHistory.duration_seconds > 0))
+        .with_entities(_COMPLETION_BUCKET, func.count())
+        .group_by(_COMPLETION_BUCKET)
+        .all()
+    )
+    completion_buckets = [
+        {"label": label, "value": int(completion_rows.get(label, 0))} for label in completion_labels
+    ]
+
+    tname_rows = (
+        scoped.join(Video, Video.bvid == WatchHistory.bvid)
+        .filter(Video.tname.isnot(None), Video.tname != "")
+        .with_entities(Video.tname.label("name"), func.count().label("views"))
+        .group_by("name")
+        .order_by(func.count().desc())
+        .limit(8)
+        .all()
+    )
+    tname_top = [{"name": str(name), "views": int(views)} for name, views in tname_rows]
+
+    cutoff_30 = _fmt(now - timedelta(days=30))
+    daily_30_rows = (
+        db.query(WatchHistory)
+        .filter(WatchHistory.view_at >= cutoff_30)
+        .with_entities(
+            func.substr(WatchHistory.view_at, 1, 10).label("day"),
+            func.count().label("views"),
+        )
+        .group_by("day")
+        .order_by("day")
+        .all()
+    )
+    daily_30 = [{"date": str(day), "views": int(views)} for day, views in daily_30_rows]
+    running = 0
+    cumulative = []
+    for point in daily_30:
+        running += point["views"]
+        cumulative.append({**point, "total": running})
+
+    follow_rows = (
+        db.query(func.substr(UpUser.followed_at, 1, 7).label("month"), func.count())
+        .filter(UpUser.followed_at.isnot(None))
+        .group_by("month")
+        .order_by("month")
+        .limit(12)
+        .all()
+    )
+    follow_trend = [{"month": str(month), "count": int(count)} for month, count in follow_rows]
+
+    top5_views = sum(u["views"] for u in top_ups[:5])
+    top5_share = round(top5_views / views, 3) if views else 0.0
+
+    cutoff_never = _fmt(now - timedelta(days=30))
+    recent_follows = (
+        db.query(UpUser).filter(UpUser.followed_at.isnot(None), UpUser.followed_at < cutoff_never).count()
+    )
+    never_watched = (
+        db.query(UpUser)
+        .filter(UpUser.followed_at.isnot(None), UpUser.followed_at < cutoff_never, UpUser.watched_count == 0)
+        .count()
+    )
+    never_watched_ratio = round(never_watched / recent_follows, 3) if recent_follows else 0.0
+
+    group_completion_rows = (
+        scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
+        .join(GroupLocal, GroupLocal.id == UpUser.group_id)
+        .filter((WatchHistory.progress == -1) | (WatchHistory.duration_seconds > 0))
+        .with_entities(GroupLocal.name.label("name"), func.avg(_COMPLETION_RATIO).label("avg_ratio"))
+        .group_by("name")
+        .order_by(func.avg(_COMPLETION_RATIO).desc())
+        .limit(8)
+        .all()
+    )
+    group_completion = [
+        {"name": str(name), "ratio": round(float(avg_ratio or 0), 3)}
+        for name, avg_ratio in group_completion_rows
+    ]
+
     return {
         "days": days,
         "generated_at": utcnow(),
@@ -112,6 +246,18 @@ def build_stats(db: Session, days: int = 7) -> dict:
         "daily": daily,
         "by_group": by_group,
         "top_ups": top_ups,
+        # chart extensions
+        "hourly": hourly,
+        "weekday": weekday,
+        "duration_buckets": duration_buckets,
+        "completion_buckets": completion_buckets,
+        "tname_top": tname_top,
+        "daily_30": daily_30,
+        "cumulative": cumulative,
+        "follow_trend": follow_trend,
+        "top5_share": top5_share,
+        "never_watched_ratio": never_watched_ratio,
+        "group_completion": group_completion,
     }
 
 

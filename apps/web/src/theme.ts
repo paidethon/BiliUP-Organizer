@@ -4,6 +4,23 @@ export type ThemeChoice = "dark" | "light" | "system";
 export type AppliedTheme = "dark" | "light";
 
 const STORAGE_KEY = "biliup-theme";
+const GLASS_KEY = "biliup-glass";
+const DEFAULT_GLASS = 14;
+
+export function applyGlass(px: number) {
+  const clamped = Math.max(0, Math.min(24, Math.round(px)));
+  document.documentElement.style.setProperty("--lumi-glass-blur", `${clamped}px`);
+}
+
+export function getGlass(): number {
+  const stored = Number(localStorage.getItem(GLASS_KEY));
+  return Number.isFinite(stored) && stored >= 0 ? stored : DEFAULT_GLASS;
+}
+
+export function setGlass(px: number) {
+  localStorage.setItem(GLASS_KEY, String(Math.round(px)));
+  applyGlass(px);
+}
 
 function resolve(choice: ThemeChoice): AppliedTheme {
   if (choice !== "system") return choice;
@@ -14,12 +31,13 @@ function apply(choice: ThemeChoice) {
   document.documentElement.dataset.theme = resolve(choice);
 }
 
-/** Apply the persisted theme once at boot (CSP forbids inline bootstrap scripts). */
+/** Apply the persisted theme + glass blur once at boot (CSP forbids inline scripts). */
 export function initTheme() {
   const stored = localStorage.getItem(STORAGE_KEY);
   const choice: ThemeChoice =
     stored === "light" || stored === "system" || stored === "dark" ? stored : "dark";
   apply(choice);
+  applyGlass(getGlass());
 }
 
 export function useTheme(): [ThemeChoice, AppliedTheme, (choice: ThemeChoice) => void] {

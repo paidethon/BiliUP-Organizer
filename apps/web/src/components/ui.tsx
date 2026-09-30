@@ -13,7 +13,7 @@ export function Button({
   };
   return (
     <button
-      className={`px-3 py-1.5 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${styles[variant]} ${className}`}
+      className={`px-3 py-1.5 rounded-[var(--lumi-radius-sm)] text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${styles[variant]} ${className}`}
       {...rest}
     />
   );
@@ -22,7 +22,7 @@ export function Button({
 export function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`bg-slate-900/70 border border-slate-700 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-indigo-400 ${className}`}
+      className={`bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-3 py-1.5 text-sm outline-none focus:border-indigo-400 ${className}`}
       {...rest}
     />
   );
@@ -31,7 +31,7 @@ export function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInput
 export function Select({ className = "", children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
-      className={`bg-slate-900/70 border border-slate-700 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-indigo-400 ${className}`}
+      className={`bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-2 py-1.5 text-sm outline-none focus:border-indigo-400 ${className}`}
       {...rest}
     >
       {children}

@@ -16,6 +16,7 @@ export interface AiSectionValue {
   model: string;
   enabled: boolean;
   configured?: boolean;
+  grouping_instructions?: string;
 }
 
 export interface SmtpSectionValue {
@@ -125,9 +126,16 @@ export function AiSectionForm({ value, saving, saved, error, onSave }: SectionFo
     api_key: value.api_key,
     model: value.model,
     enabled: value.enabled,
+    grouping_instructions: value.grouping_instructions ?? "",
   });
   useEffect(() => {
-    setDraft({ base_url: value.base_url, api_key: value.api_key, model: value.model, enabled: value.enabled });
+    setDraft({
+      base_url: value.base_url,
+      api_key: value.api_key,
+      model: value.model,
+      enabled: value.enabled,
+      grouping_instructions: value.grouping_instructions ?? "",
+    });
   }, [value]);
 
   return (
@@ -159,6 +167,17 @@ export function AiSectionForm({ value, saving, saved, error, onSave }: SectionFo
           <ToggleField label="启用 AI 分类" checked={draft.enabled} onChange={(v) => setDraft((d) => ({ ...d, enabled: v }))} />
         </div>
       </div>
+      <label className="block text-xs text-slate-400">
+        分组指引（长期要求，随每次分类附加到提示词末尾）
+        <textarea
+          value={draft.grouping_instructions}
+          onChange={(e) => setDraft((d) => ({ ...d, grouping_instructions: e.target.value }))}
+          rows={3}
+          maxLength={500}
+          placeholder="例如：分组尽可能详细，优先使用已有分组；B 站关注分组上限 20 个"
+          className="mt-1 w-full bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400 resize-y"
+        />
+      </label>
       <TestButton what="ai" label="测试连接" hint="使用已保存的配置发起测试" />
       <SectionFooter saveLabel="保存 AI 分类" saving={saving} saved={saved} error={error} onSave={() => onSave(draft)} />
     </div>

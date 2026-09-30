@@ -9,6 +9,7 @@ import Followings from "./pages/Followings";
 import Groups from "./pages/Groups";
 import Review from "./pages/Review";
 import Reminders from "./pages/Reminders";
+import ReminderSettings from "./pages/ReminderSettings";
 import History from "./pages/History";
 import WeeklyReport from "./pages/WeeklyReport";
 import Settings from "./pages/Settings";
@@ -19,6 +20,7 @@ const NAV = [
   { to: "/groups", label: "本地分组" },
   { to: "/review", label: "AI 审核" },
   { to: "/reminders", label: "提醒中心" },
+  { to: "/reminders-config", label: "提醒配置" },
   { to: "/history", label: "观看历史" },
   { to: "/weekly-report", label: "每周周报" },
   { to: "/settings", label: "设置" },
@@ -116,6 +118,7 @@ export default function App() {
         <Route path="/groups" element={<Groups />} />
         <Route path="/review" element={<Review />} />
         <Route path="/reminders" element={<Reminders />} />
+        <Route path="/reminders-config" element={<ReminderSettings />} />
         <Route path="/history" element={<History />} />
         <Route path="/weekly-report" element={<WeeklyReport />} />
         <Route path="/settings" element={<Settings />} />

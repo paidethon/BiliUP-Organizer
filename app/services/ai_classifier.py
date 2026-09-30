@@ -198,7 +198,7 @@ def _ensure_group(db: Session, name: str) -> GroupLocal:
     return group
 
 
-def run_classification(db: Session, batch_size: int = 20) -> dict:
+def run_classification(db: Session, batch_size: int = 20, instruction: str = "") -> dict:
     cfg = _ai_config(db)
     ups = _pick_ups(db, batch_size)
     if not ups:
@@ -208,6 +208,10 @@ def run_classification(db: Session, batch_size: int = 20) -> dict:
     group_names = [g.name for g in db.query(GroupLocal).order_by(GroupLocal.sort_order).all()]
     titles = _recent_titles(db, [up.mid for up in ups])
     prompt = _build_prompt(ups, group_names, titles)
+    if instruction:
+        # appended at the END so the cached prefix (system + group list + UP
+        # rows) stays byte-stable across batches with different instructions
+        prompt += "\n补充要求：" + instruction.strip()[:300]
 
     try:
         content = _chat(cfg["base_url"], cfg["api_key"], cfg["model"], prompt)

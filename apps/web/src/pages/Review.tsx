@@ -55,8 +55,14 @@ export default function Review() {
     void queryClient.invalidateQueries({ queryKey: ["followings"] });
   };
 
+  const [instruction, setInstruction] = useState("");
+
   const runMutation = useMutation({
-    mutationFn: () => api<{ classified?: number; pending?: number }>("/review/run", { method: "POST", body: { batch_size: 20 } }),
+    mutationFn: () =>
+      api<{ classified?: number; pending?: number }>("/review/run", {
+        method: "POST",
+        body: { batch_size: 20, instruction: instruction.trim() },
+      }),
     onSuccess: (res) => {
       const parts = ["AI 分类完成"];
       if (typeof res.classified === "number") parts.push(`本轮分类 ${res.classified} 个 UP`);
@@ -165,6 +171,21 @@ export default function Review() {
         </Card>
       )}
       {statusQuery.error && <ErrorState message={errText(statusQuery.error, "加载状态失败")} />}
+
+      <Card className="space-y-2">
+        <label htmlFor="ai-instruction" className="text-xs text-slate-400">
+          对 AI 的要求（可选，留空则使用设置中的分组指引）
+        </label>
+        <textarea
+          id="ai-instruction"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          rows={2}
+          maxLength={500}
+          placeholder="例如：分组尽可能详细，优先使用已有分组；B 站关注分组上限 20 个"
+          className="w-full bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-y"
+        />
+      </Card>
 
       {notice && (
         <p

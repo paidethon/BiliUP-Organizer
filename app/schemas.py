@@ -156,6 +156,8 @@ class ReviewDecideIn(BaseModel):
 
 class ReviewRunIn(BaseModel):
     batch_size: int = 20
+    # one-off requirement from the review page; empty -> ai.grouping_instructions
+    instruction: str = Field(default="", max_length=500)
 
 
 class ReviewStatusOut(BaseModel):
@@ -189,6 +191,8 @@ class AiSection(BaseModel):
     model: str = ""
     enabled: bool = False
     configured: bool = False
+    # free-form grouping guidance appended to every classification prompt
+    grouping_instructions: str = ""
 
 
 class SmtpSection(BaseModel):
