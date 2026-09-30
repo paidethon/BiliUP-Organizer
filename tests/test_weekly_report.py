@@ -23,7 +23,7 @@ get_settings()
 from app.api.weekly_routes import load_report  # noqa: E402
 from app.db import get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import AppSetting, GroupLocal, UpUser  # noqa: E402
+from app.models import AppSetting, GroupLocal, GroupMember, UpUser  # noqa: E402
 from app.services import weekly_report as wr  # noqa: E402
 from app.services.settings_store import update_section  # noqa: E402
 from app.services.weekly_report import build_report, send_weekly  # noqa: E402
@@ -65,6 +65,9 @@ def factory(db):  # noqa: ANN001, ANN201
         up = UpUser(mid=mid, **params)
         db.add(up)
         db.flush()
+        if up.group_id is not None:
+            db.add(GroupMember(up_mid=up.mid, group_id=up.group_id))
+            db.flush()
         mids.append(mid)
         return up
 

@@ -16,7 +16,7 @@ from jinja2 import Environment, FileSystemLoader
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from app.models import GroupLocal, Reminder, UpUser, Video, WatchHistory
+from app.models import GroupLocal, GroupMember, Reminder, UpUser, Video, WatchHistory
 from app.services.emailer import get_smtp_config, send_email
 from app.services.settings_store import get_section_raw
 from app.util import utcnow
@@ -96,7 +96,8 @@ def build_stats(db: Session, days: int = 7) -> dict:
 
     group_rows = (
         scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
-        .join(GroupLocal, GroupLocal.id == UpUser.group_id, isouter=True)
+        .join(GroupMember, GroupMember.up_mid == WatchHistory.up_mid, isouter=True)
+        .join(GroupLocal, GroupLocal.id == GroupMember.group_id, isouter=True)
         .with_entities(
             func.coalesce(GroupLocal.name, "未分组").label("name"),
             func.count().label("views"),
@@ -221,7 +222,8 @@ def build_stats(db: Session, days: int = 7) -> dict:
 
     group_completion_rows = (
         scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
-        .join(GroupLocal, GroupLocal.id == UpUser.group_id)
+        .join(GroupMember, GroupMember.up_mid == WatchHistory.up_mid)
+        .join(GroupLocal, GroupLocal.id == GroupMember.group_id)
         .filter((WatchHistory.progress == -1) | (WatchHistory.duration_seconds > 0))
         .with_entities(GroupLocal.name.label("name"), func.avg(_COMPLETION_RATIO).label("avg_ratio"))
         .group_by("name")

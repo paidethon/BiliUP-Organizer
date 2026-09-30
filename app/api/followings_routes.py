@@ -3,14 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query
-from sqlalchemy import or_
+from sqlalchemy import false, or_
 
 from app.api.deps import CurrentAdmin, DbSession
 from app.audit import log_action
 from app.config import get_settings
 from app.errors import bad_request, not_found
-from app.models import AiSuggestion, GroupLocal, Reminder, UpUser, Video
+from app.models import AiSuggestion, GroupLocal, GroupMember, Reminder, UpUser, Video
 from app.schemas import BulkIn, SuggestionOut, UpUserOut
+from app.services import memberships
 from app.util import utcnow
 
 router = APIRouter(prefix="/followings", tags=["followings"])
@@ -37,8 +38,14 @@ def _flag_condition(db, flag: str):  # noqa: ANN001, ANN201
         return UpUser.missing.is_(True)
     if flag == "important":
         important_ids = [row.id for row in db.query(GroupLocal.id).filter(GroupLocal.is_important.is_(True))]
-        return UpUser.group_id.in_(important_ids)
+        if not important_ids:
+            return false()
+        return UpUser.mid.in_(memberships.member_mids(db, set(important_ids)))
     raise bad_request(f"unknown flag: {flag}")
+
+
+def _group_payload(db, up: UpUser) -> list[dict]:  # noqa: ANN001
+    return [{"id": g.id, "name": g.name, "color": g.color} for g in memberships.groups_of(db, up.mid)]
 
 
 def _group_name(db, group_id: int | None) -> str | None:  # noqa: ANN001
@@ -66,13 +73,19 @@ def list_followings(
         query = query.filter(or_(UpUser.uname.like(like), UpUser.sign.like(like)))
     if group_id is not None and group_id != "":
         if group_id == "none":
-            query = query.filter(UpUser.group_id.is_(None))
+            has_any = db.query(GroupMember.id).filter(GroupMember.up_mid == UpUser.mid).exists()
+            query = query.filter(~has_any)
         else:
             try:
                 gid = int(group_id)
             except ValueError as exc:
                 raise bad_request("group_id must be an integer or 'none'") from exc
-            query = query.filter(UpUser.group_id == gid)
+            in_group = (
+                db.query(GroupMember.id)
+                .filter(GroupMember.up_mid == UpUser.mid, GroupMember.group_id == gid)
+                .exists()
+            )
+            query = query.filter(in_group)
     if flag:
         query = query.filter(_flag_condition(db, flag))
     if sort not in _SORTABLE:
@@ -86,6 +99,7 @@ def list_followings(
     for row in rows:
         item = UpUserOut.model_validate(row).model_dump()
         item["group_name"] = _group_name(db, row.group_id)
+        item["groups"] = _group_payload(db, row)
         items.append(item)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -106,6 +120,7 @@ def following_detail(mid: int, admin: CurrentAdmin, db: DbSession) -> dict:
     reminders = db.query(Reminder).filter(Reminder.entity_id == str(mid), Reminder.status == "open").all()
     up_out = UpUserOut.model_validate(up).model_dump()
     up_out["group_name"] = _group_name(db, up.group_id)
+    up_out["groups"] = _group_payload(db, up)
     return {
         "up": up_out,
         "videos": [
@@ -124,6 +139,8 @@ def following_detail(mid: int, admin: CurrentAdmin, db: DbSession) -> dict:
 
 _BULK_ACTIONS = {
     "set_group",
+    "add_to_group",
+    "remove_from_group",
     "clear_group",
     "mark_watched",
     "snooze",
@@ -146,17 +163,29 @@ def bulk_action(payload: BulkIn, admin: CurrentAdmin, db: DbSession) -> dict:
     params = payload.params
     changed = 0
 
-    if payload.action == "set_group":
+    def _target_group() -> GroupLocal | None:
         gid = params.get("group_id")
-        group = db.get(GroupLocal, int(gid)) if gid is not None else None
+        return db.get(GroupLocal, int(gid)) if gid is not None else None
+
+    if payload.action in ("set_group", "add_to_group"):
+        group = _target_group()
         if group is None:
             raise bad_request("params.group_id must reference an existing group")
         for up in ups:
-            up.group_id = group.id
-            changed += 1
+            if payload.action == "set_group":
+                up.group_id = group.id  # primary
+            if memberships.add_membership(db, up, group.id) or payload.action == "set_group":
+                changed += 1
+    elif payload.action == "remove_from_group":
+        group = _target_group()
+        if group is None:
+            raise bad_request("params.group_id must reference an existing group")
+        for up in ups:
+            if memberships.remove_membership(db, up, group.id):
+                changed += 1
     elif payload.action == "clear_group":
         for up in ups:
-            up.group_id = None
+            memberships.clear_memberships(db, up)
             changed += 1
     elif payload.action == "mark_watched":
         for up in ups:

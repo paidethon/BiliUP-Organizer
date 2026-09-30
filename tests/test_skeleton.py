@@ -98,6 +98,60 @@ def test_bulk_set_group(client: TestClient) -> None:
     assert detail.json()["up"]["group_id"] == gid
 
 
+def test_multi_group_membership(client: TestClient) -> None:
+    """一个 UP 可同时出现在多个分组：add_to_group 追加成员关系且不覆盖已有分组，
+    两组的筛选结果都包含该 UP，remove_from_group 只摘掉对应一组。"""
+    from app.db import get_session_factory
+    from app.models import UpUser
+
+    db = get_session_factory()()
+    up = UpUser(mid=99000000001, uname="多分组测试UP", followed_at="2030-01-01 00:00:00")
+    db.add(up)
+    db.commit()
+    db.close()
+    mid = up.mid
+    try:
+        gid_a = client.post("/api/v1/groups", json={"name": "多分组甲"}).json()["id"]
+        gid_b = client.post("/api/v1/groups", json={"name": "多分组乙"}).json()["id"]
+
+        added = client.post(
+            "/api/v1/followings/bulk",
+            json={"mids": [mid], "action": "add_to_group", "params": {"group_id": gid_a}},
+        )
+        assert added.json()["changed"] == 1
+        second = client.post(
+            "/api/v1/followings/bulk",
+            json={"mids": [mid], "action": "add_to_group", "params": {"group_id": gid_b}},
+        )
+        assert second.json()["changed"] == 1
+
+        detail = client.get(f"/api/v1/followings/{mid}").json()["up"]
+        assert {g["id"] for g in detail["groups"]} == {gid_a, gid_b}
+        assert detail["group_id"] == gid_a  # first membership became primary
+
+        # the UP shows up under BOTH group filters
+        in_a = client.get("/api/v1/followings", params={"group_id": str(gid_a), "page_size": 100}).json()
+        in_b = client.get("/api/v1/followings", params={"group_id": str(gid_b), "page_size": 100}).json()
+        assert mid in [item["mid"] for item in in_a["items"]]
+        assert mid in [item["mid"] for item in in_b["items"]]
+
+        removed = client.post(
+            "/api/v1/followings/bulk",
+            json={"mids": [mid], "action": "remove_from_group", "params": {"group_id": gid_a}},
+        )
+        assert removed.json()["changed"] == 1
+        detail = client.get(f"/api/v1/followings/{mid}").json()["up"]
+        assert [g["id"] for g in detail["groups"]] == [gid_b]
+        assert detail["group_id"] == gid_b  # primary re-pointed to the remaining group
+    finally:
+        db = get_session_factory()()
+        row = db.query(UpUser).filter(UpUser.mid == mid).first()
+        if row is not None:
+            db.delete(row)
+            db.commit()
+        db.close()
+
+
 def test_reminders_list_and_ack(client: TestClient) -> None:
     reminders = client.get("/api/v1/reminders")
     assert reminders.status_code == 200

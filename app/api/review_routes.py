@@ -51,9 +51,12 @@ def decide(payload: ReviewDecideIn, admin: CurrentAdmin, db: DbSession) -> dict:
         s.status = "accepted" if payload.decision == "accept" else "rejected"
         s.decided_at = utcnow()
         if payload.decision == "accept" and s.suggested_group_id:
+            from app.services import memberships
+
             up = db.query(UpUser).filter(UpUser.mid == s.up_mid).first()
             if up is not None:
-                up.group_id = s.suggested_group_id
+                up.group_id = s.suggested_group_id  # primary
+                memberships.add_membership(db, up, s.suggested_group_id)
                 up.ai_status = "done"
                 applied += 1
     db.commit()

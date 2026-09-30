@@ -90,6 +90,7 @@ class UpUserOut(OrmModel):
     snoozed_until: str | None
     blacklisted: bool
     ai_status: str
+    groups: list[dict] = []
 
 
 class GroupOut(OrmModel):

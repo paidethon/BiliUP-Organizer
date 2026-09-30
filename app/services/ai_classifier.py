@@ -288,7 +288,10 @@ def decide(db: Session, ids: list[int], decision: str) -> dict:
         if decision == "accept" and row.suggested_group_id:
             up = db.query(UpUser).filter(UpUser.mid == row.up_mid).first()
             if up is not None:
-                up.group_id = row.suggested_group_id
+                from app.services import memberships
+
+                up.group_id = row.suggested_group_id  # primary
+                memberships.add_membership(db, up, row.suggested_group_id)
                 up.ai_status = "done"
                 applied += 1
     db.commit()

@@ -25,7 +25,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import GroupLocal, NativeGroupMap, UpUser
+from app.models import GroupLocal, GroupMember, NativeGroupMap, UpUser
 from app.services.bilibili.cookies import load_cookies
 from app.services.bilibili.native_groups import (
     add_users_to_tag,
@@ -69,7 +69,13 @@ def push_overwrite(db: Session) -> dict:
 
 
 def push_incremental(db: Session) -> dict:
-    """Diff-based native sync; falls back to overwrite on a large diff."""
+    """Diff native tag members against local memberships (multi-group aware).
+
+    Reads the actual member list of every tag mapped to a local group (GET,
+    throttled), adds missing members, and moves removed members to the tag of
+    their primary group (or the default tag). Falls back to a full overwrite
+    when the diff exceeds DIFF_RATIO_OVERWRITE.
+    """
     if not load_cookies(db):
         return {"skipped": "not_logged_in"}
     c = build_client(db)
@@ -78,29 +84,58 @@ def push_incremental(db: Session) -> dict:
         by_name = {tag["bili_tag_name"]: tag["bili_tag_id"] for tag in tags}
         group_rows = db.query(GroupLocal).order_by(GroupLocal.sort_order).all()
 
-        wanted: dict[int, int] = {}  # local_group_id -> bili_tag_id
+        tag_of_group: dict[int, int] = {}
         missing_groups: list[GroupLocal] = []
         for group in group_rows:
             tag_id = by_name.get(group.name)
             if tag_id:
-                wanted[group.id] = tag_id
+                tag_of_group[group.id] = tag_id
             else:
                 missing_groups.append(group)
-
         for group in missing_groups:
             tag_id = create_tag(db, group.name, client=c)
             if tag_id:
-                wanted[group.id] = tag_id
+                tag_of_group[group.id] = tag_id
 
-        assigned = db.query(UpUser).filter(UpUser.group_id.isnot(None), UpUser.missing.is_(False)).all()
-        changes: list[tuple[UpUser, int]] = []
-        for up in assigned:
-            tag_id = wanted.get(up.group_id)  # type: ignore[arg-type]
-            if tag_id is not None and up.native_tag_id != tag_id:
-                changes.append((up, tag_id))
+        # desired members per tag, straight from the membership table
+        membership_rows = (
+            db.query(GroupMember.group_id, GroupMember.up_mid)
+            .join(UpUser, UpUser.mid == GroupMember.up_mid)
+            .filter(UpUser.missing.is_(False))
+            .all()
+        )
+        wanted: dict[int, set[int]] = {}
+        for group_id, mid in membership_rows:
+            tag_id = tag_of_group.get(group_id)
+            if tag_id:
+                wanted.setdefault(tag_id, set()).add(mid)
+        total_memberships = len(membership_rows)
 
+        tag_of_primary: dict[int, int] = {}
+        for up in db.query(UpUser).filter(UpUser.group_id.isnot(None)).all():
+            tag_id = tag_of_group.get(up.group_id)  # type: ignore[arg-type]
+            if tag_id:
+                tag_of_primary[up.mid] = tag_id
+                up.native_tag_id = tag_id
+
+        changes = 0
+        added = 0
         moved = 0
-        if assigned and len(changes) / len(assigned) > DIFF_RATIO_OVERWRITE:
+        for _group_id, tag_id in tag_of_group.items():
+            current = set(list_tag_users(db, tag_id, client=c))
+            desired = wanted.get(tag_id, set())
+            to_add = sorted(desired - current)
+            to_remove = sorted(current - desired)
+            changes += len(to_add) + len(to_remove)
+            for start in range(0, len(to_add), _ADD_USERS_BATCH):
+                added += add_users_to_tag(db, tag_id, to_add[start : start + _ADD_USERS_BATCH], client=c)
+            for mid in to_remove:
+                after = tag_of_primary.get(mid, 0)  # 0 = upstream default tag
+                if after and after != tag_id:
+                    move_users(db, [mid], tag_id, after, client=c)
+                    moved += 1
+
+        if total_memberships and changes / total_memberships > DIFF_RATIO_OVERWRITE:
             backup = backup_native_groups(db, client=c)
             for tag in list_tags(db, client=c):
                 if tag["bili_tag_id"]:
@@ -109,36 +144,17 @@ def push_incremental(db: Session) -> dict:
             return {
                 "mode": "overwrite_fallback",
                 "reason": "diff_too_large",
-                "diff_ratio": round(len(changes) / len(assigned), 3),
+                "diff_ratio": round(changes / total_memberships, 3),
                 "backup": backup,
                 "created_tags": created,
                 "placed": placed,
             }
 
-        # move known-tag members, add unknown ones; bookkeeping afterwards
-        pairs: dict[tuple[int, int], list[int]] = {}
-        fresh: dict[int, list[int]] = {}
-        for up, tag_id in changes:
-            if up.native_tag_id:
-                pairs.setdefault((up.native_tag_id, tag_id), []).append(up.mid)
-            else:
-                fresh.setdefault(tag_id, []).append(up.mid)
-            up.native_tag_id = tag_id
-        moved = 0
-        for (before_tag, after_tag), mids in pairs.items():
-            for start in range(0, len(mids), _ADD_USERS_BATCH):
-                batch = mids[start : start + _ADD_USERS_BATCH]
-                move_users(db, batch, before_tag, after_tag, client=c)
-                moved += len(batch)
-        added = 0
-        for tag_id, mids in fresh.items():
-            added += add_users_to_tag(db, tag_id, mids, client=c)
-
-        _sync_group_map(db, wanted)
+        _sync_group_map(db, tag_of_group)
         db.commit()
         return {
             "mode": "incremental",
-            "diff_ratio": round(len(changes) / len(assigned), 3) if assigned else 0.0,
+            "diff_ratio": round(changes / total_memberships, 3) if total_memberships else 0.0,
             "created_tags": len(missing_groups),
             "moved": moved,
             "added": added,

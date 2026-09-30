@@ -54,6 +54,7 @@ export interface UpUser {
   followed_at: string | null;
   group_id: number | null;
   group_name?: string | null;
+  groups?: { id: number; name: string; color: string }[];
   last_video_bvid: string | null;
   last_video_title: string | null;
   last_video_at: string | null;

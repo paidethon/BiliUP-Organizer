@@ -39,7 +39,15 @@ def collect_entries(db: Session, feed_row: FeedToken) -> list[dict[str, Any]]:
         .order_by(Video.pubdate.desc(), Video.id.desc())
     )
     if feed_row.group_id is not None:
-        query = query.filter(UpUser.group_id == feed_row.group_id)
+        from app.models import GroupMember
+
+        query = query.filter(
+            query.filter(Video.id == Video.id).exists()
+            if False
+            else UpUser.mid.in_(
+                db.query(GroupMember.up_mid).filter(GroupMember.group_id == feed_row.group_id)
+            )
+        )
     rows = query.limit(feed_row.max_items).all()
     return [
         {

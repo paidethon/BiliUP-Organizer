@@ -125,6 +125,21 @@ def seed(db: Session) -> None:
         db.add(up)
     db.flush()
 
+    # memberships mirror the primary group; a few UPs get a second group so the
+    # many-to-many behaviour is visible in the demo
+    from app.models import GroupMember
+
+    for up in db.query(UpUser).all():
+        if up.group_id is not None:
+            db.add(GroupMember(up_mid=up.mid, group_id=up.group_id))
+    db.flush()
+    multi = [u for u in db.query(UpUser).all() if u.group_id is not None][:3]
+    for up in multi:
+        other = next((g for g in groups if g.id != up.group_id), None)
+        if other is not None:
+            db.add(GroupMember(up_mid=up.mid, group_id=other.id))
+    db.flush()
+
     ups = db.query(UpUser).all()
     for i, up in enumerate(ups):
         if up.last_video_at is None:

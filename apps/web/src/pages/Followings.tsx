@@ -21,6 +21,7 @@ export default function Followings() {
   const [page, setPage] = useState(1);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkGroup, setBulkGroup] = useState("");
   const [detailMid, setDetailMid] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
@@ -138,6 +139,14 @@ export default function Followings() {
           selectedCount={selected.size}
           groups={groups}
           pending={bulkMutation.isPending}
+          targetGroup={bulkGroup}
+          onTargetGroupChange={setBulkGroup}
+          onAddToGroup={() =>
+            bulkGroup && bulkMutation.mutate({ action: "add_to_group", params: { group_id: Number(bulkGroup) } })
+          }
+          onRemoveFromGroup={() =>
+            bulkGroup && bulkMutation.mutate({ action: "remove_from_group", params: { group_id: Number(bulkGroup) } })
+          }
           onSetGroup={(gid) => bulkMutation.mutate({ action: "set_group", params: { group_id: gid } })}
           onClearGroup={() => bulkMutation.mutate({ action: "clear_group" })}
           onMarkWatched={() => bulkMutation.mutate({ action: "mark_watched" })}

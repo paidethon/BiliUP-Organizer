@@ -5,14 +5,15 @@ from fastapi import APIRouter
 from app.api.deps import CurrentAdmin, DbSession
 from app.audit import log_action
 from app.errors import bad_request, not_found
-from app.models import GroupLocal, UpUser
+from app.models import GroupLocal, GroupMember, UpUser
 from app.schemas import GroupIn, GroupOut, GroupPatchIn
+from app.services import memberships
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
 
 def _out(db, group: GroupLocal) -> GroupOut:  # noqa: ANN001
-    count = db.query(UpUser).filter(UpUser.group_id == group.id).count()
+    count = db.query(GroupMember).filter(GroupMember.group_id == group.id).count()
     data = GroupOut.model_validate(group).model_dump()
     data["up_count"] = count
     return GroupOut(**data)
@@ -65,7 +66,12 @@ def delete_group(group_id: int, admin: CurrentAdmin, db: DbSession) -> dict:
     if group is None:
         raise not_found(f"group {group_id} not found")
     name = group.name
-    db.query(UpUser).filter(UpUser.group_id == group_id).update({"group_id": None})
+    affected = db.query(UpUser).filter(UpUser.group_id == group_id).all()
+    db.query(GroupMember).filter(GroupMember.group_id == group_id).delete()
+    db.flush()
+    for up in affected:
+        remaining = memberships.group_ids_of(db, up.mid)
+        up.group_id = remaining[0] if remaining else None
     db.delete(group)
     db.commit()
     log_action(

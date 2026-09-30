@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, Integer, String, Text
+from sqlalchemy import Boolean, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -58,6 +58,21 @@ class GroupLocal(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_important: Mapped[bool] = mapped_column(Boolean, default=False)
     description: Mapped[str] = mapped_column(Text, default="")
+
+
+class GroupMember(Base):
+    """UP ↔ local-group membership (many-to-many).
+
+    up_users.group_id stays as the PRIMARY group (native-tag sync bookkeeping);
+    every group an UP appears in — including the primary — lives here.
+    """
+
+    __tablename__ = "group_members"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    up_mid: Mapped[int] = mapped_column(Integer, index=True)
+    group_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[str] = mapped_column(Text, default=_ts)
+    __table_args__ = (UniqueConstraint("up_mid", "group_id", name="uq_group_members_up_group"),)
     created_at: Mapped[str] = mapped_column(Text, default=_ts)
 
 

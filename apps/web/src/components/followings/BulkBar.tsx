@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { Group } from "../../api";
 import { Button, Select } from "../ui";
 
@@ -6,6 +5,10 @@ export interface BulkBarProps {
   selectedCount: number;
   groups: Group[];
   pending: boolean;
+  targetGroup: string;
+  onTargetGroupChange: (value: string) => void;
+  onAddToGroup: () => void;
+  onRemoveFromGroup: () => void;
   onSetGroup: (groupId: number) => void;
   onClearGroup: () => void;
   onMarkWatched: () => void;
@@ -16,7 +19,6 @@ export interface BulkBarProps {
 }
 
 export function FollowingsBulkBar(props: BulkBarProps) {
-  const [targetGroup, setTargetGroup] = useState("");
   const count = props.selectedCount;
 
   return (
@@ -30,12 +32,12 @@ export function FollowingsBulkBar(props: BulkBarProps) {
       </span>
       <div className="flex items-center gap-1">
         <Select
-          value={targetGroup}
-          onChange={(e) => setTargetGroup(e.target.value)}
+          value={props.targetGroup}
+          onChange={(e) => props.onTargetGroupChange(e.target.value)}
           aria-label="选择目标分组"
           className="min-w-[140px]"
         >
-          <option value="">移动到分组…</option>
+          <option value="">选择分组…</option>
           {props.groups.map((g) => (
             <option key={g.id} value={String(g.id)}>
               {g.name}
@@ -44,18 +46,31 @@ export function FollowingsBulkBar(props: BulkBarProps) {
         </Select>
         <Button
           variant="primary"
-          disabled={!targetGroup || props.pending}
-          aria-label="确认移动到所选分组"
+          disabled={!props.targetGroup || props.pending}
+          onClick={props.onAddToGroup}
+        >
+          添加到分组
+        </Button>
+        <Button
+          variant="subtle"
+          disabled={!props.targetGroup || props.pending}
+          onClick={props.onRemoveFromGroup}
+        >
+          从分组移除
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={!props.targetGroup || props.pending}
           onClick={() => {
-            const gid = Number(targetGroup);
+            const gid = Number(props.targetGroup);
             if (!Number.isNaN(gid)) props.onSetGroup(gid);
           }}
         >
-          移动
+          仅设为该组
         </Button>
       </div>
-      <Button variant="subtle" disabled={props.pending} onClick={props.onClearGroup} aria-label="清除所选 UP 的分组">
-        清除分组
+      <Button variant="subtle" disabled={props.pending} onClick={props.onClearGroup} aria-label="清除所选 UP 的全部分组">
+        清除全部分组
       </Button>
       <Button variant="subtle" disabled={props.pending} onClick={props.onMarkWatched} aria-label="将所选标记为已看">
         标记已看

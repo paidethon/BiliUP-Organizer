@@ -50,16 +50,16 @@ test.describe("关注管理", () => {
     await expect(page.getByRole("row", { name: /何同学/ })).toHaveCount(0);
   });
 
-  test("勾选 2 行批量移动到知识科普，组 Badge 更新", async ({ page }) => {
+  test("勾选 2 行批量添加到知识科普，组 Badge 更新", async ({ page }) => {
     await openFollowings(page);
     await page.getByLabel("选择 何同学").check();
     await page.getByLabel("选择 老师好我叫何同学").check();
     const bar = page.getByRole("toolbar", { name: "已选中 2 个 UP 的批量操作" });
     await expect(bar).toBeVisible();
     await bar.getByLabel("选择目标分组").selectOption({ label: "知识科普" });
-    await bar.getByRole("button", { name: "确认移动到所选分组" }).click();
+    await bar.getByRole("button", { name: "添加到分组" }).click();
     await expect(page.getByRole("status").filter({ hasText: "已更新 2 个 UP 主" })).toBeVisible();
-    // 行内分组 Badge 更新为知识科普
+    // 行内分组 Badge 更新为知识科普（多分组下追加，不影响已有徽标）
     await expect(
       page.getByRole("row", { name: /何同学/ }).filter({ hasText: "知识科普" }),
     ).toHaveCount(2);

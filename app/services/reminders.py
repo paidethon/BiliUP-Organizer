@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.models import AiSuggestion, BilibiliAccount, GroupLocal, Reminder, SyncRun, UpUser
+from app.services import memberships
 from app.services.settings_store import get_section_raw
 from app.util import utcnow
 
@@ -85,7 +86,7 @@ def _scope_mids(db: Session, raw: dict) -> set[int] | None:
         ids = {int(g) for g in raw.get("scope_group_ids") or [] if str(g).lstrip("-").isdigit()}
         if not ids:
             return set()
-        return {up.mid for up in db.query(UpUser).filter(UpUser.group_id.in_(ids)).all()}
+        return memberships.member_mids(db, ids)
     if mode == "ups":
         return {int(m) for m in raw.get("scope_mids") or [] if str(m).lstrip("-").isdigit()}
     return None
@@ -96,7 +97,7 @@ def _up_alerts(
     p: dict,
     now: datetime,
     cutoffs: dict[str, str],
-    important_groups: set[int],
+    important_mids: set[int],
     pending: dict[int, AiSuggestion],
 ) -> _EXPECTED:
     """Expected reminder rows for one active (not skipped) UP."""
@@ -128,8 +129,7 @@ def _up_alerts(
             str(up.mid),
         )
     if (
-        up.group_id is not None
-        and up.group_id in important_groups
+        up.mid in important_mids
         and up.last_video_at is not None
         and (up.last_watched_at is None or up.last_video_at > up.last_watched_at)
     ):
@@ -161,6 +161,7 @@ def _expected_alerts(db: Session, p: dict, now: datetime) -> _EXPECTED:
         "never": _cutoff(p["never_watched_days"], now),
     }
     important_groups = {g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()}
+    important_mids = memberships.member_mids(db, important_groups)
     pending: dict[int, AiSuggestion] = {}
     rows = (
         db.query(AiSuggestion)
@@ -180,7 +181,7 @@ def _expected_alerts(db: Session, p: dict, now: datetime) -> _EXPECTED:
             continue
         if scope is not None and up.mid not in scope:
             continue
-        alerts.update(_up_alerts(up, p, now, cutoffs, important_groups, pending))
+        alerts.update(_up_alerts(up, p, now, cutoffs, important_mids, pending))
 
     account = db.query(BilibiliAccount).first()
     if account is not None:

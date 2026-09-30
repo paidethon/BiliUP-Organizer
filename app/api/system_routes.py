@@ -5,6 +5,7 @@ import sqlite3
 
 from fastapi import APIRouter, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import func
 
 from app import __version__
 from app.api.deps import CurrentAdmin, DbSession
@@ -33,7 +34,9 @@ def stats(admin: CurrentAdmin, db: DbSession) -> StatsOut:
     from app.auth import get_bilibili_account
 
     total = db.query(UpUser).count()
-    grouped = db.query(UpUser).filter(UpUser.group_id.isnot(None)).count()
+    from app.models import GroupMember
+
+    grouped = db.query(func.count(func.distinct(GroupMember.up_mid))).scalar() or 0
     missing = db.query(UpUser).filter(UpUser.missing.is_(True)).count()
     last_sync = db.query(SyncRun).filter(SyncRun.status == "success").order_by(SyncRun.id.desc()).first()
     return StatsOut(

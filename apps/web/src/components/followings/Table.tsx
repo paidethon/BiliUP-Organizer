@@ -22,8 +22,13 @@ function snoozeActive(up: UpUser): boolean {
   return new Date(up.snoozed_until.replace(" ", "T")).getTime() > Date.now();
 }
 
-function groupOf(groups: Group[], up: UpUser): Group | undefined {
-  return up.group_id == null ? undefined : groups.find((g) => g.id === up.group_id);
+function groupsOf(groups: Group[], up: UpUser): Group[] {
+  if (up.groups?.length) {
+    return up.groups
+      .map((brief) => groups.find((g) => g.id === brief.id))
+      .filter((g): g is Group => Boolean(g));
+  }
+  return up.group_id == null ? [] : groups.filter((g) => g.id === up.group_id);
 }
 
 export function FollowingsTable(props: FollowingsTableProps) {
@@ -93,7 +98,12 @@ export function FollowingsTable(props: FollowingsTableProps) {
                     </div>
                   </td>
                   <td className="px-3 py-2">
-                    <GroupBadge color={groupOf(groups, up)?.color} name={up.group_name} />
+                    <div className="flex flex-wrap gap-1">
+                      {groupsOf(groups, up).map((g) => (
+                        <GroupBadge key={g.id} color={g.color} name={g.name} />
+                      ))}
+                      {groupsOf(groups, up).length === 0 && <span className="text-xs text-slate-500">未分组</span>}
+                    </div>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
                     {up.last_video_at ? (

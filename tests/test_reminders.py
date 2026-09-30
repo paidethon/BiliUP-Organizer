@@ -27,6 +27,7 @@ from app.models import (  # noqa: E402
     AiSuggestion,
     BilibiliAccount,
     GroupLocal,
+    GroupMember,
     Reminder,
     SyncRun,
     UpUser,
@@ -81,6 +82,9 @@ def factory(db):  # noqa: ANN001, ANN201
         up = UpUser(mid=mid, **params)
         db.add(up)
         db.flush()
+        if up.group_id is not None:
+            db.add(GroupMember(up_mid=up.mid, group_id=up.group_id))
+            db.flush()
         mids.append(mid)
         return up
 
@@ -126,8 +130,10 @@ def factory(db):  # noqa: ANN001, ANN201
             synchronize_session=False
         )
         db.query(AiSuggestion).filter(AiSuggestion.up_mid.in_(mids)).delete(synchronize_session=False)
+        db.query(GroupMember).filter(GroupMember.up_mid.in_(mids)).delete(synchronize_session=False)
         db.query(UpUser).filter(UpUser.mid.in_(mids)).delete(synchronize_session=False)
     if group_ids:
+        db.query(GroupMember).filter(GroupMember.group_id.in_(group_ids)).delete(synchronize_session=False)
         db.query(GroupLocal).filter(GroupLocal.id.in_(group_ids)).delete(synchronize_session=False)
     if run_ids:
         db.query(SyncRun).filter(SyncRun.id.in_(run_ids)).delete(synchronize_session=False)

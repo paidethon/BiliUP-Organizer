@@ -23,7 +23,7 @@ get_settings()
 
 from app.db import get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import FeedToken, GroupLocal, UpUser, Video  # noqa: E402
+from app.models import FeedToken, GroupLocal, GroupMember, UpUser, Video  # noqa: E402
 from app.services.feeds import collect_entries, render_atom  # noqa: E402
 
 NS = {"a": "http://www.w3.org/2005/Atom"}
@@ -59,6 +59,11 @@ def fixture_data(db):  # noqa: ANN001, ANN201
     up_black = UpUser(mid=880000003, uname="RSS拉黑UP", group_id=group.id, blacklisted=True)
     up_outside = UpUser(mid=880000004, uname="RSS组外UP")
     db.add_all([up_ok, up_gone, up_black, up_outside])
+    db.flush()
+    existing = {row[0] for row in db.query(GroupMember.up_mid).filter(GroupMember.group_id == group.id).all()}
+    for up in (up_ok, up_gone, up_black):
+        if up.mid not in existing:
+            db.add(GroupMember(up_mid=up.mid, group_id=group.id))
     db.flush()
     base = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
     rows = [
