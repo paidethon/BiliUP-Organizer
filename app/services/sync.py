@@ -11,28 +11,80 @@ from app.util import utcnow
 
 _TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 _DEFAULT_HISTORY_PAGES = 5
+_DEFAULT_HISTORY_WINDOW = 14  # days; window-based fetch makes day stats complete
 
 
 def run_sync_kind(db: Session, kind: str) -> dict:
     """Entry point used by routes and the scheduler.
 
-    kind: followings | watch_history | full | native_groups.
-    Returns a stats dict; raises on unrecoverable errors (the caller records
-    the failure on the SyncRun row). Maps bilibili AuthExpiredError ->
-    login_status='expired' + login_expired reminder, RiskControlError ->
-    risk_flag + risk_control reminder.
+    kind: followings | watch_history | full | native_groups | native_overwrite |
+    native_incremental. Returns a stats dict; raises on unrecoverable errors
+    (the caller records the failure on the SyncRun row). Maps bilibili
+    AuthExpiredError -> login_status='expired' + login_expired reminder,
+    RiskControlError -> risk_flag + risk_control reminder.
+
+    "full" (the manual「立即同步」button) pulls followings + watch history and
+    then OVERWRITES bilibili native groups from local groups (backup first).
+    Scheduled native maintenance uses "native_incremental" (diff-based).
     """
     if kind == "followings":
-        return run_followings_sync(db)
+        stats = run_followings_sync(db)
+        stats["archives_refreshed"] = refresh_archives(db)
+        return stats
     if kind == "watch_history":
         return run_watch_history_sync(db)
     if kind == "full":
         stats = run_followings_sync(db)
-        stats.update(run_watch_history_sync(db))
+        stats["archives_refreshed"] = refresh_archives(db)
+        # history keys are prefixed: both sub-stats used to collide on "new"
+        history = run_watch_history_sync(db)
+        stats["history_fetched"] = history.get("fetched", 0)
+        stats["history_new"] = history.get("new", 0)
+        stats["ups_touched"] = history.get("ups_touched", 0)
+        from app.services import native_sync
+
+        stats["native"] = native_sync.push_overwrite(db)
         return stats
+    if kind == "native_overwrite":
+        from app.services import native_sync
+
+        return native_sync.push_overwrite(db)
+    if kind == "native_incremental":
+        from app.services import native_sync
+
+        return native_sync.push_incremental(db)
     if kind == "native_groups":
         return run_native_groups_sync(db)
     raise ValueError(f"unknown sync kind: {kind}")
+
+
+def refresh_archives(db: Session) -> int:
+    """Refresh recent uploads (title + 分区) for the UPs with the oldest data.
+
+    Bounded per run (default 40 UPs, one request each, shared throttled client)
+    so a full refresh converges over a few syncs without hammering upstream.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.bilibili.cookies import load_cookies
+    from app.services.bilibili.followings import fetch_recent_archives
+
+    if not load_cookies(db):
+        return 0
+    cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+    stale = (
+        db.query(UpUser)
+        .filter(
+            UpUser.missing.is_(False),
+            (UpUser.last_video_at.is_(None)) | (UpUser.last_video_at < cutoff),
+        )
+        .order_by(UpUser.last_video_at.asc().nulls_first())
+        .limit(40)
+        .all()
+    )
+    if not stale:
+        return 0
+    return fetch_recent_archives(db, [up.mid for up in stale], max_ups=40)
 
 
 def run_followings_sync(db: Session) -> dict:
@@ -109,8 +161,9 @@ def run_followings_sync(db: Session) -> dict:
 def run_watch_history_sync(db: Session) -> dict:
     """Frozen contract (implemented by the sync agent):
 
-    - fetch recent history (max pages from sync settings, default 5 pages)
-    - upsert watch_history rows (unique bvid+view_at)
+    - fetch recent history covering the configured window (default 14 days,
+      capped by max pages from sync settings)
+    - upsert watch_history rows (unique bvid+view_at), storing video duration
     - per up: last_watched_at = latest view_at, watched_count = distinct bvid count
       for followed mids only
     - return {"fetched": int, "new": int, "ups_touched": int}
@@ -122,10 +175,13 @@ def run_watch_history_sync(db: Session) -> dict:
     if not load_cookies(db):
         return {"skipped": "not_logged_in"}
 
-    raw_pages = get_section_raw(db, "sync").get("history_max_pages")
-    max_pages = _int_or(raw_pages, _DEFAULT_HISTORY_PAGES) or _DEFAULT_HISTORY_PAGES
+    sync_cfg = get_section_raw(db, "sync")
+    max_pages = _int_or(sync_cfg.get("history_max_pages"), _DEFAULT_HISTORY_PAGES) or _DEFAULT_HISTORY_PAGES
+    window_days = (
+        _int_or(sync_cfg.get("history_window_days"), _DEFAULT_HISTORY_WINDOW) or _DEFAULT_HISTORY_WINDOW
+    )
 
-    entries = _fetch_guarded(db, fetch_history, db, max_pages=max_pages)
+    entries = _fetch_guarded(db, fetch_history, db, max_pages=max_pages, window_days=window_days)
 
     ups_by_mid: dict[int, UpUser] = {up.mid: up for up in db.query(UpUser).all()}
 
@@ -161,6 +217,7 @@ def run_watch_history_sync(db: Session) -> dict:
                     title=str(entry.get("title") or ""),
                     view_at=view_at,
                     progress=_int_or(entry.get("progress"), 0),
+                    duration_seconds=_int_or(entry.get("duration"), None),
                 )
             )
             new += 1
@@ -170,6 +227,9 @@ def run_watch_history_sync(db: Session) -> dict:
             progress = _int_or(entry.get("progress"), None)
             if progress is not None:
                 row.progress = progress
+            duration = _int_or(entry.get("duration"), None)
+            if duration:
+                row.duration_seconds = duration
         if up_mid is not None and up_mid in ups_by_mid:
             touched.add(up_mid)
 

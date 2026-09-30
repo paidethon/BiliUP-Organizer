@@ -116,7 +116,14 @@ def bilibili_logout(admin: CurrentAdmin, db: DbSession) -> BilibiliAccountOut:
 
 @router.post("/sync/run", response_model=SyncRunOut)
 def run_sync(payload: SyncRunIn, admin: CurrentAdmin, db: DbSession) -> SyncRunOut:
-    if payload.kind not in ("followings", "watch_history", "full", "native_groups"):
+    if payload.kind not in (
+        "followings",
+        "watch_history",
+        "full",
+        "native_groups",
+        "native_overwrite",
+        "native_incremental",
+    ):
         raise bad_request("unknown sync kind")
     settings = get_settings()
     if settings.demo_mode:
@@ -234,3 +241,15 @@ def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession
         detail={"tag_id": payload.tag_id, "count": len(payload.mids)},
     )
     return {"ok": True, "added": added}
+
+
+@router.post("/native-groups/push-overwrite")
+def push_native_groups_overwrite(admin: CurrentAdmin, db: DbSession) -> dict:
+    """Backup native tags, wipe them, rebuild from local groups (manual path)."""
+    if get_settings().demo_mode:
+        return {"ok": True, "mode": "overwrite", "demo": True}
+    from app.services import native_sync
+
+    result = native_sync.push_overwrite(db)
+    log_action(db, admin.username, "bilibili.native_groups_overwrite", detail={"mode": result.get("mode")})
+    return {"ok": True, **result}

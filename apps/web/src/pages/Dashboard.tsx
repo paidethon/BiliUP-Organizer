@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { useAuth } from "../auth";
 import { Badge, Button, Card, ErrorState, Spinner } from "../components/ui";
 import { BiliAccountCard } from "../components/bili";
@@ -34,11 +35,53 @@ export default function Dashboard() {
     queryFn: () => api<SystemStats>("/system/stats"),
   });
 
+  // The sync endpoint returns a run id immediately and works in the background;
+  // poll the run until it settles so the button reflects real progress.
+  const [runId, setRunId] = useState<number | null>(null);
+  const [syncNote, setSyncNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (runId == null) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const runs = await api<Array<{ id: number; status: string; error: string | null }>>(
+          "/bilibili/sync/runs",
+          { query: { limit: 5 } },
+        );
+        if (cancelled) return;
+        const mine = runs.find((r) => r.id === runId);
+        if (!mine) return;
+        if (mine.status === "success") {
+          setSyncNote({ ok: true, text: "同步完成（本地分组已备份并覆盖到 B 站）" });
+          setRunId(null);
+          void queryClient.invalidateQueries();
+        } else if (mine.status === "failed") {
+          setSyncNote({ ok: false, text: `同步失败：${mine.error ?? "未知错误"}` });
+          setRunId(null);
+        }
+      } catch {
+        /* transient poll error: keep waiting */
+      }
+      if (!cancelled && runId != null) {
+        timerRef.current = window.setTimeout(() => void poll(), 3000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, [runId, queryClient]);
+
   const syncMutation = useMutation({
     mutationFn: () =>
       api<{ id: number; status: string }>("/bilibili/sync/run", { method: "POST", body: { kind: "full" } }),
-    onSuccess: () => queryClient.invalidateQueries(),
+    onSuccess: (res) => setRunId(res.id),
+    onError: () => setRunId(null),
   });
+  const syncing = syncMutation.isPending || runId != null;
 
   const loginBadge = data ? (LOGIN_BADGE[data.login_status] ?? { label: data.login_status, tone: "warn" as const }) : null;
 
@@ -62,24 +105,32 @@ export default function Dashboard() {
         {demoMode && <Badge tone="warn">演示模式</Badge>}
         {loginBadge && <Badge tone={loginBadge.tone}>B 站{loginBadge.label}</Badge>}
         <div className="ml-auto flex items-center gap-2">
-          {syncMutation.isError && (
-            <span className="text-xs text-red-400" role="alert">
-              同步失败：{syncMutation.error instanceof ApiError ? syncMutation.error.message : "请稍后重试"}
+          {syncNote && !syncing && (
+            <span className={`text-xs ${syncNote.ok ? "text-emerald-300" : "text-red-400"}`} role="status">
+              {syncNote.text}
+            </span>
+          )}
+          {syncing && (
+            <span className="text-xs text-slate-400" role="status">
+              正在备份并重建 B 站分组，请稍候…
             </span>
           )}
           <Button
             variant="primary"
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
+            onClick={() => {
+              setSyncNote(null);
+              syncMutation.mutate();
+            }}
+            disabled={syncing}
             aria-label="立即执行完整同步"
           >
-            {syncMutation.isPending && (
+            {syncing && (
               <span
                 aria-hidden="true"
                 className="inline-block h-3.5 w-3.5 mr-1.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin align-[-2px]"
               />
             )}
-            {syncMutation.isPending ? "同步中…" : "立即同步"}
+            {syncing ? "同步中…" : "立即同步"}
           </Button>
         </div>
       </header>

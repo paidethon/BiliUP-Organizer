@@ -34,10 +34,23 @@ def start_scheduler() -> BackgroundScheduler | None:
     if _scheduler is not None:
         return _scheduler
 
+    from app.db import get_session_factory
     from app.services import sync as sync_service
     from app.services import weekly_report
     from app.services.lumirss import push_pending
     from app.services.reminders import run_scan
+    from app.services.settings_store import get_section_raw
+
+    def _interval(section: str, key: str, default_hours: int) -> float:
+        with get_session_factory()() as session:
+            raw = get_section_raw(session, section).get(key)
+        try:
+            return max(1.0, float(raw or default_hours))
+        except (TypeError, ValueError):
+            return float(default_hours)
+
+    sync_hours = _interval("sync", "interval_hours", 6)
+    reminder_hours = _interval("reminders", "frequency_hours", 24)
 
     def _weekly(db):  # noqa: ANN001
         from app.api.weekly_routes import store_report
@@ -50,7 +63,7 @@ def start_scheduler() -> BackgroundScheduler | None:
     _scheduler.add_job(
         _job("followings_sync", lambda db: sync_service.run_sync_kind(db, "followings")),
         "interval",
-        hours=6,
+        hours=sync_hours,
         id="followings_sync",
         max_instances=1,
         coalesce=True,
@@ -66,9 +79,18 @@ def start_scheduler() -> BackgroundScheduler | None:
         next_run_time=None,
     )
     _scheduler.add_job(
+        _job("native_groups_sync", lambda db: sync_service.run_sync_kind(db, "native_incremental")),
+        "interval",
+        hours=6,
+        id="native_groups_sync",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=None,
+    )
+    _scheduler.add_job(
         _job("reminder_scan", run_scan),
         "interval",
-        minutes=30,
+        hours=reminder_hours,
         id="reminder_scan",
         max_instances=1,
         coalesce=True,

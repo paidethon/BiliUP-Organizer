@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 # Batch cap for tags/addUsers; upstream limit is undocumented, keep <= 50
 # per RESEARCH §7.2.
 _ADD_USERS_BATCH = 50
+_TAG_USERS_PAGE = 50
+_TAG_USERS_MAX_PAGES = 40  # hard cap: 2000 members per tag is far beyond real use
 
 
 def list_tags(db: Session, client: BiliClient | None = None) -> list[dict]:
@@ -90,3 +92,72 @@ def add_users_to_tag(db: Session, tag_id: int, mids: list[int], client: BiliClie
         if own:
             c.close()
     return added
+
+
+def list_tag_users(db: Session, tag_id: int, client: BiliClient | None = None) -> list[int]:
+    """All member mids of a native tag, paginated (read-only; used for backups)."""
+    own = client is None
+    c = client or build_client(db)
+    mids: list[int] = []
+    try:
+        for page in range(1, _TAG_USERS_MAX_PAGES + 1):
+            data = c._request(
+                "GET",
+                f"{API_BASE}/x/relation/tag/users",
+                params={"tagid": int(tag_id), "pn": page, "ps": _TAG_USERS_PAGE},
+            )
+            rows = list((data or {}).get("list") or [])
+            for row in rows:
+                mid = int(row.get("mid") or 0)
+                if mid:
+                    mids.append(mid)
+            if len(rows) < _TAG_USERS_PAGE:
+                break
+    finally:
+        if own:
+            c.close()
+    return mids
+
+
+def delete_tag(db: Session, tag_id: int, client: BiliClient | None = None) -> None:
+    """Delete a native tag; its members fall back to the upstream default tag."""
+    own = client is None
+    c = client or build_client(db)
+    try:
+        c._request(
+            "POST",
+            f"{API_BASE}/x/relation/tag/del",
+            data={"tagid": str(int(tag_id)), "csrf": load_cookies(db).get("bili_jct", "")},
+        )
+    finally:
+        if own:
+            c.close()
+
+
+def move_users(
+    db: Session,
+    fids: list[int],
+    before_tag_id: int,
+    after_tag_id: int,
+    client: BiliClient | None = None,
+) -> None:
+    """Move members between two native tags (batched)."""
+    own = client is None
+    c = client or build_client(db)
+    csrf = load_cookies(db).get("bili_jct", "")
+    try:
+        for start in range(0, len(fids), _ADD_USERS_BATCH):
+            batch = [str(int(mid)) for mid in fids[start : start + _ADD_USERS_BATCH]]
+            c._request(
+                "POST",
+                f"{API_BASE}/x/relation/moveUsers",
+                data={
+                    "fids": ",".join(batch),
+                    "before_tagid": str(int(before_tag_id)),
+                    "after_tagid": str(int(after_tag_id)),
+                    "csrf": csrf,
+                },
+            )
+    finally:
+        if own:
+            c.close()

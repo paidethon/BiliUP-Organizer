@@ -256,16 +256,35 @@ def test_run_sync_kind_full_merges_stats(db: Session, monkeypatch: pytest.Monkey
     make_up(db, 101)
     patch_fetch(monkeypatch, "fetch_followings", FOLLOWING_ROWS)
     patch_fetch(monkeypatch, "fetch_history", HISTORY_ENTRIES)
+    monkeypatch.setattr(sync_service, "refresh_archives", lambda _db: 2)
+    import app.services.native_sync as native_sync_module
+
+    monkeypatch.setattr(
+        native_sync_module,
+        "push_overwrite",
+        lambda _db: {"mode": "overwrite", "created_tags": 0, "placed": 0},
+    )
 
     stats = sync_service.run_sync_kind(db, "full")
 
-    # both halves ran; note "new" is a shared key, the history value wins in
-    # the frozen run_sync_kind merge
+    # followings keys stay unprefixed; history keys are namespaced because the
+    # old flat merge let history["new"] clobber the followings "new"
     assert stats["total"] == 2
     assert stats["updated"] == 1
-    assert stats["fetched"] == 3
+    assert stats["archives_refreshed"] == 2
+    assert stats["history_fetched"] == 3
+    assert stats["history_new"] == 3
     assert stats["ups_touched"] == 1
-    assert stats["new"] == 3
+    assert stats["new"] == 1
+    assert stats["native"]["mode"] == "overwrite"
 
     with pytest.raises(ValueError):
         sync_service.run_sync_kind(db, "nope")
+
+
+def test_history_window_days_passed_to_fetcher(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    make_account(db)
+    calls: list[dict] = []
+    patch_fetch(monkeypatch, "fetch_history", [], calls)
+    sync_service.run_watch_history_sync(db)
+    assert calls[0]["kwargs"].get("window_days") == 14

@@ -59,6 +59,27 @@ export default function Groups() {
     onError: (err) => setDeleteError(errText(err, "删除失败，请重试")),
   });
 
+  const reorderMutation = useMutation({
+    mutationFn: (vars: { a: { id: number; sort_order: number }; b: { id: number; sort_order: number } }) =>
+      Promise.all([
+        api(`/groups/${vars.a.id}`, { method: "PATCH", body: { sort_order: vars.a.sort_order } }),
+        api(`/groups/${vars.b.id}`, { method: "PATCH", body: { sort_order: vars.b.sort_order } }),
+      ]),
+    onSuccess: () => invalidate(),
+  });
+
+  function move(index: number, dir: -1 | 1) {
+    const list = data ?? [];
+    const other = index + dir;
+    if (other < 0 || other >= list.length) return;
+    const current = list[index];
+    const neighbor = list[other];
+    reorderMutation.mutate({
+      a: { id: current.id, sort_order: neighbor.sort_order },
+      b: { id: neighbor.id, sort_order: current.sort_order },
+    });
+  }
+
   function submitForm(values: GroupFormValues) {
     setFormError("");
     if (editing) updateMutation.mutate({ id: editing.id, values });
@@ -104,7 +125,7 @@ export default function Groups() {
 
       {data && data.length > 0 && (
         <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" aria-label="分组列表">
-          {data.map((g) => (
+          {data.map((g, index) => (
             <li key={g.id}>
               <Card className="h-full flex flex-col gap-2">
                 <div className="flex items-center gap-2">
@@ -126,7 +147,23 @@ export default function Groups() {
                 ) : (
                   <p className="text-xs text-slate-600">暂无描述</p>
                 )}
-                <div className="mt-auto flex gap-2 pt-1">
+                <div className="mt-auto flex items-center gap-2 pt-1">
+                  <Button
+                    variant="ghost"
+                    onClick={() => move(index, -1)}
+                    disabled={index === 0 || reorderMutation.isPending}
+                    aria-label={`上移分组 ${g.name}`}
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => move(index, 1)}
+                    disabled={index === data.length - 1 || reorderMutation.isPending}
+                    aria-label={`下移分组 ${g.name}`}
+                  >
+                    ↓
+                  </Button>
                   <Button
                     variant="ghost"
                     onClick={() => {

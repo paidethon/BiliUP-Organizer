@@ -54,8 +54,16 @@ def configured_ai(db):  # noqa: ANN001, ANN201
     update_section(db, "ai", {"base_url": "", "api_key": "", "model": "", "enabled": False})
 
 
-def _make_up(db, uname: str, mid: int) -> UpUser:  # noqa: ANN001
-    up = UpUser(mid=mid, uname=uname, sign=f"{uname} 的签名", followed_at="2000-01-01 00:00:00")
+def _make_up(db, uname: str, mid: int, *, exclude_from_weekly: bool = False) -> UpUser:  # noqa: ANN001
+    """exclude_from_weekly keeps new UPs out of the weekly-report test's top-10
+    never-watched cutoff (the report test shares this database module-wide)."""
+    up = UpUser(
+        mid=mid,
+        uname=uname,
+        sign=f"{uname} 的签名",
+        followed_at="2000-01-01 00:00:00",
+        watched_count=1 if exclude_from_weekly else 0,
+    )
     db.add(up)
     db.commit()
     return up
@@ -102,6 +110,35 @@ def test_tolerates_markdown_fence(db, configured_ai) -> None:  # noqa: ANN001
     result = run_classification(db, batch_size=10)
     assert result["classified"] == 1
     assert db.query(UpUser).filter(UpUser.mid == up.mid).first().ai_status == "pending"
+
+
+@respx.mock
+def test_read_timeout_retries_once(db, configured_ai) -> None:  # noqa: ANN001
+    up = _make_up(db, "AI测试UP八", 910000008, exclude_from_weekly=True)
+    route = respx.post(f"{AI_BASE}/chat/completions").mock(
+        side_effect=[
+            httpx.ReadTimeout("The read operation timed out"),
+            _ai_response(
+                f'[{{"mid": {up.mid}, "group": "游戏", "confidence": 0.8, "rationale": "游戏实况"}}]'
+            ),
+        ]
+    )
+    result = run_classification(db, batch_size=10)
+    assert route.call_count == 2
+    assert result["classified"] == 1
+
+
+@respx.mock
+def test_flattens_nested_group_format(db, configured_ai) -> None:  # noqa: ANN001
+    up1 = _make_up(db, "AI测试UP九", 910000009, exclude_from_weekly=True)
+    up2 = _make_up(db, "AI测试UP十", 910000010, exclude_from_weekly=True)
+    respx.post(f"{AI_BASE}/chat/completions").mock(
+        return_value=_ai_response('[{"group": "绘画动画", "ups": [{"mid": 910000009}, {"mid": 910000010}]}]')
+    )
+    result = run_classification(db, batch_size=10)
+    assert result["classified"] == 2
+    assert db.query(UpUser).filter(UpUser.mid == up1.mid).first().ai_status == "pending"
+    assert db.query(UpUser).filter(UpUser.mid == up2.mid).first().ai_status == "pending"
 
 
 @respx.mock

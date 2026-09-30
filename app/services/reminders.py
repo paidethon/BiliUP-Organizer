@@ -53,18 +53,48 @@ def _cutoff(days: int, now: datetime) -> str:
 
 def _prefs(db: Session) -> dict:
     raw = get_section_raw(db, "reminders")
+    legacy_days = int(raw.get("long_unwatched_days") or 14)
+    windows_raw = raw.get("unwatched_days")
+    windows: list[int] = []
+    if isinstance(windows_raw, list):
+        for value in windows_raw:
+            try:
+                days = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= days <= 365 and days not in windows:
+                windows.append(days)
+    if not windows:
+        windows = [legacy_days]
+    windows = sorted(windows)[:4]
     return {
         "stale_days": int(raw.get("stale_days") or 30),
-        "long_unwatched_days": int(raw.get("long_unwatched_days") or 14),
+        "long_unwatched_days": legacy_days,
+        "unwatched_days": windows,
         "never_watched_days": int(raw.get("never_watched_days") or 30),
         "low_confidence_threshold": float(raw.get("low_confidence_threshold") or 0.6),
         "weekly_report_enabled": bool(raw.get("weekly_report_enabled", True)),
+        "frequency_hours": max(1, int(raw.get("frequency_hours") or 24)),
     }
+
+
+def _scope_mids(db: Session, raw: dict) -> set[int] | None:
+    """UP-scoped rules only fire for these mids; None means every UP."""
+    mode = str(raw.get("scope_mode") or "all")
+    if mode == "groups":
+        ids = {int(g) for g in raw.get("scope_group_ids") or [] if str(g).lstrip("-").isdigit()}
+        if not ids:
+            return set()
+        return {up.mid for up in db.query(UpUser).filter(UpUser.group_id.in_(ids)).all()}
+    if mode == "ups":
+        return {int(m) for m in raw.get("scope_mids") or [] if str(m).lstrip("-").isdigit()}
+    return None
 
 
 def _up_alerts(
     up: UpUser,
     p: dict,
+    now: datetime,
     cutoffs: dict[str, str],
     important_groups: set[int],
     pending: dict[int, AiSuggestion],
@@ -79,14 +109,16 @@ def _up_alerts(
             "up_user",
             str(up.mid),
         )
-    if up.last_watched_at is not None and up.last_watched_at < cutoffs["long"]:
-        alerts[f"long_unwatched:{up.mid}"] = (
-            "warning",
-            f"UP「{up.uname}」长期未观看",
-            f"上次观看：{up.last_watched_at}，已超过 {p['long_unwatched_days']} 天。",
-            "up_user",
-            str(up.mid),
-        )
+    for days in p["unwatched_days"]:
+        cutoff = _cutoff(days, now)
+        if up.last_watched_at is not None and up.last_watched_at < cutoff:
+            alerts[f"long_unwatched:{up.mid}:{days}"] = (
+                "warning",
+                f"UP「{up.uname}」{days} 天未观看",
+                f"上次观看：{up.last_watched_at}，已超过 {days} 天。",
+                "up_user",
+                str(up.mid),
+            )
     if up.followed_at is not None and up.followed_at < cutoffs["never"] and (up.watched_count or 0) == 0:
         alerts[f"never_watched:{up.mid}"] = (
             "warning",
@@ -126,7 +158,6 @@ def _expected_alerts(db: Session, p: dict, now: datetime) -> _EXPECTED:
     """Build the full dedup_key -> payload map implied by current state."""
     cutoffs = {
         "stale": _cutoff(p["stale_days"], now),
-        "long": _cutoff(p["long_unwatched_days"], now),
         "never": _cutoff(p["never_watched_days"], now),
     }
     important_groups = {g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()}
@@ -140,13 +171,16 @@ def _expected_alerts(db: Session, p: dict, now: datetime) -> _EXPECTED:
     for row in rows:
         pending[row.up_mid] = row  # later rows (newer) win
 
+    scope = _scope_mids(db, get_section_raw(db, "reminders"))
     alerts: _EXPECTED = {}
     for up in db.query(UpUser).all():
         if up.missing or up.blacklisted:
             continue
         if up.snoozed_until is not None and up.snoozed_until > _fmt(now):
             continue
-        alerts.update(_up_alerts(up, p, cutoffs, important_groups, pending))
+        if scope is not None and up.mid not in scope:
+            continue
+        alerts.update(_up_alerts(up, p, now, cutoffs, important_groups, pending))
 
     account = db.query(BilibiliAccount).first()
     if account is not None:
@@ -197,7 +231,11 @@ def run_scan(db: Session) -> dict:
 
     - stale_uploader: last_video_at older than stale_days (NULL counts as stale;
       per-up, not snoozed, not blacklisted, not missing) -> info
-    - long_unwatched: last_watched_at older than long_unwatched_days -> warning
+    - long_unwatched: for EACH configured window (unwatched_days, e.g. 7/14/30):
+      last_watched_at older than that window -> warning (dedup key carries the
+      window, so one UP can have several escalation levels open at once)
+    - scope_mode 'groups'/'ups' limits UP-scoped rules to the selected groups
+      or UPs; 'all' (default) covers everyone
     - never_watched: followed_at older than never_watched_days AND watched_count==0
       -> warning
     - important_unwatched: UP in an is_important group with a video newer than

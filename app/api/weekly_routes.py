@@ -57,6 +57,22 @@ def preview(admin: CurrentAdmin, db: DbSession) -> dict:
     return {"generated_at": utcnow(), "html": html}
 
 
+@router.get("/stats")
+def stats(admin: CurrentAdmin, db: DbSession, days: int = 7) -> dict:
+    from app.services.weekly_report import build_stats
+
+    return build_stats(db, days=max(1, min(days, 30)))
+
+
+@router.post("/ai")
+def ai_report(admin: CurrentAdmin, db: DbSession) -> dict:
+    from app.services.weekly_report import build_ai_report
+
+    result = build_ai_report(db)
+    log_action(db, admin.username, "weekly_report.ai", detail={"fallback": result.get("fallback")})
+    return result
+
+
 @router.post("/send")
 def send(admin: CurrentAdmin, db: DbSession) -> dict:
     settings = get_settings()

@@ -47,6 +47,46 @@
           </tr>
           <tr>
             <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #e0338a;padding-left:10px;">本周观看分析</h2>
+              <p style="margin:0 0 10px;font-size:13px;color:#52525b;">
+                近 {{ watched }} 次观看，累计 <strong style="color:#e0338a;">{{ watch_duration }}</strong>。
+              </p>
+              {% if daily %}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                {% for day in daily %}
+                <tr>
+                  <td width="64" style="padding:3px 6px 3px 0;">{{ day.date[5:] }}</td>
+                  <td>
+                    <div style="background:#fce7f3;border-radius:4px;min-width:4px;width:{{ (day.views * 6) if day.views < 15 else 90 }}%;height:12px;">
+                      <div style="background:#e0338a;border-radius:4px;height:12px;width:{{ (day.views * 6) if day.views < 15 else 100 }}%;">&nbsp;</div>
+                    </div>
+                  </td>
+                  <td width="36" align="right" style="padding-left:6px;">{{ day.views }} 次</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% endif %}
+              {% if by_group %}
+              <p style="margin:12px 0 4px;font-size:13px;color:#18181b;font-weight:600;">分组偏好</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                {% for g in by_group %}
+                <tr>
+                  <td width="110" style="padding:2px 6px 2px 0;">{{ g.name }}</td>
+                  <td>{{ g.views }} 次{% if g.seconds %} · {{ (g.seconds / 60) | round(0, 'floor') | int }} 分钟{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% endif %}
+              {% if top_ups %}
+              <p style="margin:12px 0 4px;font-size:13px;color:#18181b;font-weight:600;">最常看的 UP</p>
+              <p style="margin:0;font-size:12px;color:#71717a;">
+                {% for up in top_ups %}{{ up.uname }}（{{ up.views }}）{% if not loop.last %}、{% endif %}{% endfor %}
+              </p>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
               <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #f59e0b;padding-left:10px;">长期未更新</h2>
               {% if stale %}
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">

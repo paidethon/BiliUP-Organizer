@@ -154,7 +154,7 @@ def test_up_rules_trigger_and_dedup(db, factory) -> None:  # noqa: ANN001
 
     stale_row = _row(db, f"stale_uploader:{stale.mid}")
     assert stale_row is not None and stale_row.status == "open" and stale_row.severity == "info"
-    unwatched_row = _row(db, f"long_unwatched:{unwatched.mid}")
+    unwatched_row = _row(db, f"long_unwatched:{unwatched.mid}:14")
     assert unwatched_row is not None
     assert unwatched_row.status == "open" and unwatched_row.severity == "warning"
     never_row = _row(db, f"never_watched:{never.mid}")
@@ -182,7 +182,7 @@ def test_condition_cleared_resolves(db, factory) -> None:  # noqa: ANN001
     db.commit()
 
     run_scan(db)
-    assert _row(db, f"long_unwatched:{unwatched.mid}").status == "open"
+    assert _row(db, f"long_unwatched:{unwatched.mid}:14").status == "open"
     assert _row(db, f"low_confidence:{low_conf.mid}").status == "open"
 
     unwatched.last_watched_at = _days_ago(0)
@@ -190,7 +190,7 @@ def test_condition_cleared_resolves(db, factory) -> None:  # noqa: ANN001
     db.commit()
     result = run_scan(db)
     assert result["resolved"] >= 2
-    assert _row(db, f"long_unwatched:{unwatched.mid}").status == "resolved"
+    assert _row(db, f"long_unwatched:{unwatched.mid}:14").status == "resolved"
     assert _row(db, f"low_confidence:{low_conf.mid}").status == "resolved"
 
 
@@ -201,12 +201,12 @@ def test_reopen_after_resolve_when_condition_returns(db, factory) -> None:  # no
     up.last_watched_at = _days_ago(0)
     db.commit()
     run_scan(db)
-    assert _row(db, f"long_unwatched:{up.mid}").status == "resolved"
+    assert _row(db, f"long_unwatched:{up.mid}:14").status == "resolved"
     up.last_watched_at = _days_ago(20)
     db.commit()
     result = run_scan(db)
     assert result["created"] >= 1
-    assert _row(db, f"long_unwatched:{up.mid}").status == "open"
+    assert _row(db, f"long_unwatched:{up.mid}:14").status == "open"
 
 
 def test_snoozed_missing_blacklisted_skipped(db, factory) -> None:  # noqa: ANN001

@@ -218,12 +218,21 @@ class ReminderPrefs(BaseModel):
     low_confidence_threshold: float = 0.6
     email_enabled: bool = False
     weekly_report_enabled: bool = True
+    # multi-window "not watched" reminders, ascending days (e.g. 7/14/30)
+    unwatched_days: list[int] = [14]
+    # limit UP-scoped reminders to specific groups or UPs
+    scope_mode: str = "all"  # all | groups | ups
+    scope_group_ids: list[int] = []
+    scope_mids: list[int] = []
+    # how often the reminder engine runs (hours); wired into the scheduler
+    frequency_hours: int = 24
 
 
 class SyncPrefs(BaseModel):
     interval_hours: int = 6
     history_enabled: bool = True
     history_max_pages: int = 5
+    history_window_days: int = 14
 
 
 class SettingsOut(BaseModel):

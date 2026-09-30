@@ -72,6 +72,7 @@ class UpUser(Base):
     special: Mapped[bool] = mapped_column(Boolean, default=False)
     followed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    native_tag_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_video_bvid: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_video_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_video_at: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -101,6 +102,7 @@ class Video(Base):
     bvid: Mapped[str] = mapped_column(Text, unique=True)
     up_mid: Mapped[int] = mapped_column(Integer, index=True)
     title: Mapped[str] = mapped_column(Text)
+    tname: Mapped[str | None] = mapped_column(Text, nullable=True)
     pubdate: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -115,6 +117,7 @@ class WatchHistory(Base):
     title: Mapped[str] = mapped_column(Text, default="")
     view_at: Mapped[str] = mapped_column(Text, index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class AiSuggestion(Base):

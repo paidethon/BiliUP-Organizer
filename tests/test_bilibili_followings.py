@@ -275,6 +275,7 @@ def test_fetch_history_maps_and_filters(logged_in_db: Session, client: BiliClien
             "author_mid": 101,
             "view_at": "2023-12-10 10:29:29",
             "progress": 120,
+            "duration": 0,
         },
         {
             "bvid": "BV1h2",
@@ -282,6 +283,7 @@ def test_fetch_history_maps_and_filters(logged_in_db: Session, client: BiliClien
             "author_mid": None,
             "view_at": "2023-11-14 22:13:20",
             "progress": -1,
+            "duration": 0,
         },
     ]
 

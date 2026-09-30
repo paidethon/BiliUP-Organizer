@@ -49,3 +49,15 @@ def test_integration(what: str, admin: CurrentAdmin, db: DbSession) -> TestResul
         ok, message = test_connection(db)
     log_action(db, admin.username, f"settings.test_{what}", detail={"ok": ok, "message": message[:200]})
     return TestResultOut(ok=ok, message=message)
+
+
+@router.post("/lumirss/detect")
+def detect_lumirss(payload: dict, admin: CurrentAdmin, db: DbSession) -> dict:
+    """GET-only probe of candidate LumiRSS URLs; writes base_url/inbox_endpoint."""
+    if get_settings().demo_mode:
+        return {"ok": False, "message": "demo mode: detect skipped", "tried": []}
+    from app.services.lumirss_detect import detect_and_configure
+
+    result = detect_and_configure(db, payload.get("base_url") or None)
+    log_action(db, admin.username, "settings.lumirss_detect", detail={"ok": result["ok"]})
+    return result

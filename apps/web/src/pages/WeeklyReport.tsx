@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
-import { Badge, Button, EmptyState, ErrorState, Spinner } from "../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorState, Spinner } from "../components/ui";
 import { formatDate, relativeTime } from "../components/followings/helpers";
 
 interface ReportPayload {
@@ -9,13 +9,68 @@ interface ReportPayload {
   html: string | null;
 }
 
+interface StatsPayload {
+  days: number;
+  views: number;
+  watch_seconds: number;
+  avg_video_seconds: number;
+  new_videos: number;
+  daily: { date: string; views: number; seconds: number }[];
+  by_group: { name: string; views: number; seconds: number }[];
+  top_ups: { uname: string; views: number; seconds: number }[];
+}
+
+function humanDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 0) return `${hours} 小时 ${minutes % 60} 分钟`;
+  if (minutes > 0) return `${minutes} 分钟`;
+  return `${seconds} 秒`;
+}
+
 function errText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
+}
+
+/** Minimal inline SVG bar chart — no chart library, no extra bundle weight. */
+function DailyBars({ daily }: { daily: StatsPayload["daily"] }) {
+  if (!daily.length) return <p className="text-xs text-slate-500">本窗口暂无观看记录</p>;
+  const max = Math.max(...daily.map((d) => d.views), 1);
+  const width = Math.max(280, daily.length * 44);
+  const height = 120;
+  const barW = 24;
+  const gap = (width - daily.length * barW) / (daily.length + 1);
+  return (
+    <svg role="img" aria-label="每日观看次数柱状图" className="w-full max-w-full" viewBox={`0 0 ${width} ${height}`}>
+      {daily.map((d, i) => {
+        const h = Math.max(3, (d.views / max) * (height - 36));
+        const x = gap + i * (barW + gap);
+        return (
+          <g key={d.date}>
+            <rect x={x} y={height - 20 - h} width={barW} height={h} rx={4} fill="url(#weekly-grad)" />
+            <text x={x + barW / 2} y={height - 24 - h} textAnchor="middle" className="fill-slate-400" fontSize="10">
+              {d.views}
+            </text>
+            <text x={x + barW / 2} y={height - 6} textAnchor="middle" className="fill-slate-500" fontSize="10">
+              {d.date.slice(5)}
+            </text>
+          </g>
+        );
+      })}
+      <defs>
+        <linearGradient id="weekly-grad" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor="#ff2f7e" />
+          <stop offset="100%" stopColor="#ff8ac2" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
 }
 
 export default function WeeklyReport() {
   const queryClient = useQueryClient();
   const [preview, setPreview] = useState<ReportPayload | null>(null);
+  const [aiPreview, setAiPreview] = useState<ReportPayload | null>(null);
   const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const latestQuery = useQuery({
@@ -23,11 +78,26 @@ export default function WeeklyReport() {
     queryFn: () => api<ReportPayload>("/weekly-report"),
   });
 
+  const statsQuery = useQuery({
+    queryKey: ["weekly-report", "stats"],
+    queryFn: () => api<StatsPayload>("/weekly-report/stats", { query: { days: 7 } }),
+  });
+
   const previewMutation = useMutation({
     mutationFn: () => api<ReportPayload>("/weekly-report/preview", { method: "POST" }),
     onSuccess: (res) => {
       setPreview(res);
+      setAiPreview(null);
       void queryClient.invalidateQueries({ queryKey: ["weekly-report"] });
+    },
+  });
+
+  const aiMutation = useMutation({
+    mutationFn: () => api<{ ok: boolean; html: string; fallback: boolean; message: string }>("/weekly-report/ai", { method: "POST" }),
+    onSuccess: (res) => {
+      setAiPreview({ generated_at: null, html: res.html });
+      setPreview(null);
+      setSendResult({ ok: !res.fallback, message: res.message });
     },
   });
 
@@ -41,8 +111,9 @@ export default function WeeklyReport() {
   });
 
   const latest = latestQuery.data;
-  const shown: ReportPayload | null = preview ?? (latest?.html ? latest : null);
-  const isPreview = preview != null;
+  const stats = statsQuery.data;
+  const shown: ReportPayload | null = aiPreview ?? preview ?? (latest?.html ? latest : null);
+  const isPreview = aiPreview != null || preview != null;
 
   return (
     <div className="space-y-4">
@@ -50,16 +121,24 @@ export default function WeeklyReport() {
         <h1 className="text-lg font-bold">每周周报</h1>
         {shown?.generated_at && (
           <span className="text-xs text-slate-500" title={formatDate(shown.generated_at)}>
-            {isPreview ? "预览生成于 " : "上次生成 "}
-            {relativeTime(shown.generated_at)}
+            {aiPreview ? "AI 分析 · " : isPreview ? "预览生成于 " : "上次生成 "}
+            {relativeTime(shown.generated_at ?? "")}
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {(previewMutation.isError || sendMutation.isError) && (
+          {(previewMutation.isError || sendMutation.isError || aiMutation.isError) && (
             <span className="text-xs text-red-400" role="alert">
-              {errText(previewMutation.error ?? sendMutation.error, "操作失败")}
+              {errText(previewMutation.error ?? sendMutation.error ?? aiMutation.error, "操作失败")}
             </span>
           )}
+          <Button
+            variant="ghost"
+            onClick={() => aiMutation.mutate()}
+            disabled={aiMutation.isPending}
+            aria-label="生成 AI 分析周报"
+          >
+            {aiMutation.isPending ? "AI 分析中…" : "AI 分析"}
+          </Button>
           <Button
             variant="ghost"
             onClick={() => previewMutation.mutate()}
@@ -100,9 +179,73 @@ export default function WeeklyReport() {
         </p>
       )}
 
+      {stats && (
+        <section aria-label="观看统计" className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Card>
+              <p className="text-xs text-slate-500">观看次数</p>
+              <p className="text-2xl font-bold mt-1 tabular-nums">{stats.views}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-slate-500">观看时长</p>
+              <p className="text-2xl font-bold mt-1 tabular-nums">{humanDuration(stats.watch_seconds)}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-slate-500">平均单视频</p>
+              <p className="text-2xl font-bold mt-1 tabular-nums">{humanDuration(stats.avg_video_seconds)}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-slate-500">新增投稿</p>
+              <p className="text-2xl font-bold mt-1 tabular-nums">{stats.new_videos}</p>
+            </Card>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Card>
+              <h2 className="text-sm font-semibold mb-2">每日观看（近 {stats.days} 天）</h2>
+              <DailyBars daily={stats.daily} />
+            </Card>
+            <Card>
+              <h2 className="text-sm font-semibold mb-2">分组偏好</h2>
+              {stats.by_group.length ? (
+                <ul className="space-y-1.5 text-sm">
+                  {stats.by_group.map((g) => (
+                    <li key={g.name} className="flex items-center gap-2">
+                      <span className="w-24 shrink-0 truncate text-slate-300">{g.name}</span>
+                      <span className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden" aria-hidden="true">
+                        <span
+                          className="block h-full rounded-full btn-grad"
+                          style={{ width: `${Math.max(4, (g.views / Math.max(...stats.by_group.map((x) => x.views), 1)) * 100)}%` }}
+                        />
+                      </span>
+                      <span className="text-xs text-slate-500 tabular-nums w-20 text-right">
+                        {g.views} 次 · {humanDuration(g.seconds)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-500">暂无分组观看数据</p>
+              )}
+              {stats.top_ups.length > 0 && (
+                <>
+                  <h3 className="text-sm font-semibold mt-4 mb-1">最常看的 UP</h3>
+                  <p className="text-xs text-slate-400">
+                    {stats.top_ups.map((up) => `${up.uname}（${up.views}）`).join("、")}
+                  </p>
+                </>
+              )}
+            </Card>
+          </div>
+        </section>
+      )}
+
       {shown?.html ? (
         <section aria-label="周报内容" className="space-y-2">
-          {isPreview && <Badge tone="info">预览（尚未存为最新报告，点「立即发送」生成并发送）</Badge>}
+          {isPreview && (
+            <Badge tone="info">
+              {aiPreview ? "AI 分析（不写入存档）" : "预览（尚未存为最新报告，点「立即发送」生成并发送）"}
+            </Badge>
+          )}
           <div className="surface p-2">
             <iframe
               title="周报内容预览"
