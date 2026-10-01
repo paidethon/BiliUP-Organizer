@@ -5,6 +5,7 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import { Badge, Button, Card, ErrorState, Spinner } from "../components/ui";
 import { BiliAccountCard } from "../components/bili";
+import { NativeSyncCard } from "../components/dashboard/NativeSyncCard";
 import { relativeTime } from "../components/followings/helpers";
 
 interface SystemStats {
@@ -54,7 +55,7 @@ export default function Dashboard() {
         const mine = runs.find((r) => r.id === runId);
         if (!mine) return;
         if (mine.status === "success") {
-          setSyncNote({ ok: true, text: "同步完成（本地分组已备份并覆盖到 B 站）" });
+          setSyncNote({ ok: true, text: "同步完成（关注与观看历史已更新；B 站原生分组推送需在下方单独执行）" });
           setRunId(null);
           void queryClient.invalidateQueries();
         } else if (mine.status === "failed") {
@@ -112,7 +113,7 @@ export default function Dashboard() {
           )}
           {syncing && (
             <span className="text-xs text-slate-400" role="status">
-              正在备份并重建 B 站分组，请稍候…
+              正在同步关注列表与观看历史…
             </span>
           )}
           <Button
@@ -181,6 +182,7 @@ export default function Dashboard() {
             </li>
           </ul>
         </Card>
+        <NativeSyncCard />
       </section>
     </div>
   );

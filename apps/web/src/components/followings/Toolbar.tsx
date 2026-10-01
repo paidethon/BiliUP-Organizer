@@ -1,8 +1,15 @@
 import type { ReactNode } from "react";
 import type { Group } from "../../api";
+import { Select } from "../ui";
+import type { DisplayMode, PageSizeValue } from "./useFollowingsUrl";
 
 export type FlagValue = "" | "stale" | "unwatched" | "never" | "missing" | "important";
 export type SortValue = "followed" | "name" | "last_video" | "last_watched";
+
+export interface StatusLabelCount {
+  label: string;
+  count: number;
+}
 
 export interface FollowingsToolbarProps {
   q: string;
@@ -11,10 +18,17 @@ export interface FollowingsToolbarProps {
   onGroupIdChange: (value: string) => void;
   flag: FlagValue;
   onFlagChange: (value: FlagValue) => void;
+  status: string;
+  onStatusChange: (value: string) => void;
+  statuses: StatusLabelCount[];
   sort: SortValue;
   onSortChange: (value: SortValue) => void;
   order: "asc" | "desc";
   onToggleOrder: () => void;
+  mode: DisplayMode;
+  onModeChange: (mode: DisplayMode) => void;
+  pageSize: PageSizeValue;
+  onPageSizeChange: (size: PageSizeValue) => void;
   groups: Group[];
 }
 
@@ -71,7 +85,7 @@ function FilterRow({ label, ariaLabel, children }: { label: string; ariaLabel: s
       <span className="w-10 shrink-0 pt-1 text-xs text-slate-500" aria-hidden="true">
         {label}
       </span>
-      <div className="flex flex-wrap gap-1.5">{children}</div>
+      <div className="flex flex-wrap gap-1.5 items-center">{children}</div>
     </div>
   );
 }
@@ -88,6 +102,31 @@ export function FollowingsToolbar(props: FollowingsToolbarProps) {
         aria-label="搜索 UP 主"
         className="w-full bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-3 py-2 text-sm outline-none focus:border-indigo-400"
       />
+
+      <FilterRow label="显示" ariaLabel="显示模式">
+        <Chip selected={props.mode === "paged"} onClick={() => props.onModeChange("paged")} title="服务器分页浏览">
+          分页
+        </Chip>
+        <Chip selected={props.mode === "all"} onClick={() => props.onModeChange("all")} title="一次显示全部筛选结果（虚拟滚动）">
+          全部
+        </Chip>
+        {props.mode === "paged" && (
+          <span className="flex items-center gap-1.5 text-xs text-slate-500 ml-1">
+            <label htmlFor="followings-page-size">每页数量</label>
+            <Select
+              id="followings-page-size"
+              aria-label="每页数量"
+              value={String(props.pageSize)}
+              onChange={(e) => props.onPageSizeChange(Number(e.target.value) as PageSizeValue)}
+              className="py-0.5 text-xs"
+            >
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </Select>
+          </span>
+        )}
+      </FilterRow>
 
       <FilterRow label="分组" ariaLabel="分组筛选">
         <Chip selected={props.groupId === ""} onClick={() => props.onGroupIdChange("")}>
@@ -120,6 +159,21 @@ export function FollowingsToolbar(props: FollowingsToolbarProps) {
         ))}
       </FilterRow>
 
+      {props.statuses.length > 0 && (
+        <FilterRow label="分类" ariaLabel="分类状态筛选">
+          {props.statuses.map((s) => (
+            <Chip
+              key={s.label}
+              selected={props.status === s.label}
+              onClick={() => props.onStatusChange(props.status === s.label ? "" : s.label)}
+              title={`按状态标签「${s.label}」筛选（${s.count} 个 UP）`}
+            >
+              {s.label}（{s.count}）
+            </Chip>
+          ))}
+        </FilterRow>
+      )}
+
       <FilterRow label="排序" ariaLabel="排序筛选">
         {SORTS.map((s) => {
           const active = props.sort === s.value;
@@ -143,9 +197,11 @@ export function FollowingsToolbar(props: FollowingsToolbarProps) {
       </FilterRow>
 
       <p className="text-xs text-slate-600" aria-live="polite">
-        当前：{activeSort?.label} {props.order === "desc" ? "降序" : "升序"}
+        当前：{props.mode === "all" ? "全部模式" : `分页 · 每页 ${props.pageSize} 条`} · {activeSort?.label}{" "}
+        {props.order === "desc" ? "降序" : "升序"}
         {props.groupId === "none" ? " · 未分组" : ""}
         {props.flag ? ` · ${FLAGS.find((f) => f.value === props.flag)?.label}` : ""}
+        {props.status ? ` · 状态标签 ${props.status}` : ""}
       </p>
     </div>
   );

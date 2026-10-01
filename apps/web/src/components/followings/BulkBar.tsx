@@ -3,6 +3,8 @@ import { Button, Select } from "../ui";
 
 export interface BulkBarProps {
   selectedCount: number;
+  /** 全选筛选结果模式：仅展示语义不同，提交走 query + exclude_mids。 */
+  selectAllFiltered: boolean;
   groups: Group[];
   pending: boolean;
   targetGroup: string;
@@ -23,12 +25,21 @@ export function FollowingsBulkBar(props: BulkBarProps) {
 
   return (
     <div
-      className="surface glow p-3 flex flex-wrap items-center gap-2 text-sm"
+      className="surface glow p-3 flex flex-wrap items-center gap-2 text-sm sticky bottom-0 z-20"
+      style={{ backgroundColor: "color-mix(in srgb, var(--lumi-surface) 94%, transparent)" }}
       role="toolbar"
       aria-label={`已选中 ${count} 个 UP 的批量操作`}
     >
       <span className="text-slate-300">
-        已选 <strong className="text-indigo-300">{count}</strong> 个
+        {props.selectAllFiltered ? (
+          <>
+            已选择全部筛选结果 <strong className="text-indigo-300">{count}</strong> 个
+          </>
+        ) : (
+          <>
+            已选 <strong className="text-indigo-300">{count}</strong> 个
+          </>
+        )}
       </span>
       <div className="flex items-center gap-1">
         <Select
@@ -87,10 +98,10 @@ export function FollowingsBulkBar(props: BulkBarProps) {
       <button
         type="button"
         onClick={props.onClearSelection}
-        aria-label="取消选择"
+        aria-label="清除选择"
         className="ml-auto text-xs text-slate-400 hover:text-white underline underline-offset-2"
       >
-        取消选择
+        清除选择
       </button>
     </div>
   );

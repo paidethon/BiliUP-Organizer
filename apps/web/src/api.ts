@@ -55,6 +55,8 @@ export interface UpUser {
   group_id: number | null;
   group_name?: string | null;
   groups?: { id: number; name: string; color: string }[];
+  tags?: { id: number; name: string; color: string }[];
+  status_labels?: string[];
   last_video_bvid: string | null;
   last_video_title: string | null;
   last_video_at: string | null;
@@ -75,6 +77,14 @@ export interface Group {
   is_important: boolean;
   description: string;
   up_count: number;
+  aliases?: string[];
+}
+
+export interface Tag {
+  id: number;
+  name: string;
+  color: string;
+  up_count: number;
 }
 
 export interface Reminder {
@@ -94,13 +104,62 @@ export interface Suggestion {
   id: number;
   up_mid: number;
   up_uname: string;
+  up_face: string;
   suggested_group_id: number | null;
   suggested_group_name: string;
+  suggested_tags: string[];
+  previous_group_name: string | null;
   confidence: number;
   rationale: string;
+  evidence: { sample_titles?: string[]; source?: string; video_count?: number };
   model: string;
+  provider: string;
+  prompt_version: string;
   status: string;
   created_at: string;
+  current_group_name: string | null;
+  recent_videos: { title: string; tname: string | null; pubdate: string | null }[];
+  status_labels: string[];
+}
+
+export interface ClassificationJob {
+  id: number;
+  kind: "pending" | "full";
+  status: "running" | "paused" | "completed" | "cancelled" | "failed";
+  batch_size: number;
+  auto_apply: boolean;
+  threshold: number;
+  total: number;
+  processed: number;
+  classified: number;
+  auto_applied: number;
+  needs_review: number;
+  unclassifiable: number;
+  failed: number;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+  progress?: number;
+}
+
+export interface UndoRecord {
+  id: number;
+  action: string;
+  summary: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  item_count: number;
+}
+
+export interface BulkQuery {
+  q?: string;
+  group_id?: string;
+  flag?: string;
+  status?: string;
+  tag_id?: string;
+  sort?: string;
+  order?: string;
 }
 
 export interface SyncRun {
@@ -111,6 +170,17 @@ export interface SyncRun {
   finished_at: string | null;
   stats: Record<string, unknown> | null;
   error: string | null;
+}
+
+export interface NativePlan {
+  mode: string;
+  dry_run: boolean;
+  would_create_tags: string[];
+  would_delete_tags: string[];
+  would_move: number;
+  skipped: number;
+  conflicts: string[];
+  notes: string[];
 }
 
 export interface Paged<T> {

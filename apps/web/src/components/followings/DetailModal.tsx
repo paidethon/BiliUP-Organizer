@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api";
 import { Badge, ErrorState, Modal, Spinner } from "../ui";
-import { GroupBadge, UpAvatar, formatDuration, formatDate, relativeTime } from "./helpers";
+import { GroupBadge, StatusLabelBadge, TagBadge, UpAvatar, formatDuration, formatDate, relativeTime } from "./helpers";
 
 interface DetailVideo {
   bvid: string;
@@ -36,6 +36,9 @@ interface FollowingDetail {
     sign: string;
     face: string;
     group_name: string | null;
+    groups?: { id: number; name: string; color: string }[];
+    tags?: { id: number; name: string; color: string }[];
+    status_labels?: string[];
     followed_at: string | null;
     last_video_at: string | null;
     last_watched_at: string | null;
@@ -89,9 +92,29 @@ export function FollowingDetailModal({
                 <div className="flex gap-1">
                   <dt className="text-slate-500">分组：</dt>
                   <dd>
-                    <GroupBadge color={undefined} name={data.up.group_name} />
+                    <GroupBadge color={data.up.groups?.[0]?.color} name={data.up.group_name} />
                   </dd>
                 </div>
+                {data.up.tags && data.up.tags.length > 0 && (
+                  <div className="flex gap-1 col-span-2">
+                    <dt className="text-slate-500 shrink-0">标签：</dt>
+                    <dd className="flex flex-wrap gap-1">
+                      {data.up.tags.map((t) => (
+                        <TagBadge key={t.id} name={t.name} color={t.color} />
+                      ))}
+                    </dd>
+                  </div>
+                )}
+                {data.up.status_labels && data.up.status_labels.length > 0 && (
+                  <div className="flex gap-1 col-span-2">
+                    <dt className="text-slate-500 shrink-0">状态：</dt>
+                    <dd className="flex flex-wrap gap-1">
+                      {data.up.status_labels.map((label) => (
+                        <StatusLabelBadge key={label} label={label} />
+                      ))}
+                    </dd>
+                  </div>
+                )}
                 <div className="flex gap-1">
                   <dt className="text-slate-500">关注于：</dt>
                   <dd>{formatDate(data.up.followed_at)}</dd>
