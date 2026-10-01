@@ -23,9 +23,10 @@ def run_sync_kind(db: Session, kind: str) -> dict:
     AuthExpiredError -> login_status='expired' + login_expired reminder,
     RiskControlError -> risk_flag + risk_control reminder.
 
-    "full" (the manual「立即同步」button) pulls followings + watch history and
-    then OVERWRITES bilibili native groups from local groups (backup first).
-    Scheduled native maintenance uses "native_incremental" (diff-based).
+    "full" (the manual「立即同步」button) pulls followings + watch history only;
+    native-group pushes are decoupled and never run automatically. Scheduled
+    native maintenance uses "native_incremental" and is gated by the
+    sync.native_push_enabled setting (off by default).
     """
     if kind == "followings":
         stats = run_followings_sync(db)
@@ -41,9 +42,6 @@ def run_sync_kind(db: Session, kind: str) -> dict:
         stats["history_fetched"] = history.get("fetched", 0)
         stats["history_new"] = history.get("new", 0)
         stats["ups_touched"] = history.get("ups_touched", 0)
-        from app.services import native_sync
-
-        stats["native"] = native_sync.push_overwrite(db)
         return stats
     if kind == "native_overwrite":
         from app.services import native_sync
@@ -51,7 +49,10 @@ def run_sync_kind(db: Session, kind: str) -> dict:
         return native_sync.push_overwrite(db)
     if kind == "native_incremental":
         from app.services import native_sync
+        from app.services.settings_store import get_section_raw
 
+        if not bool(get_section_raw(db, "sync").get("native_push_enabled")):
+            return {"skipped": "native_push_disabled"}
         return native_sync.push_incremental(db)
     if kind == "native_groups":
         return run_native_groups_sync(db)

@@ -1,5 +1,11 @@
 """Sync local groups to bilibili native follow tags.
 
+Local categories (groups_local) and native tags are separate systems: local
+groups are unlimited and are the source of truth; native tags are a projection
+produced only by explicit push operations. Every push supports ``dry_run=True``
+which computes the plan with remote READS only — no tag create/delete, no
+member writes, no backup file.
+
 Two strategies, chosen by the caller:
 
 - ``push_overwrite``  — the manual「立即同步」path: snapshot the current native
@@ -9,7 +15,9 @@ Two strategies, chosen by the caller:
   last pushed state (up_users.native_tag_id + native_group_map) and only
   create missing tags, move changed members and add new ones. When the diff is
   too large (see DIFF_RATIO_OVERWRITE) it falls back to the overwrite path,
-  which is cheaper and more consistent than hundreds of moves.
+  which is cheaper and more consistent than hundreds of moves. The scheduled
+  path additionally requires the ``sync.native_push_enabled`` setting (off by
+  default); AI classification never touches native tags by itself.
 
 All upstream endpoints are the same throttled, csrf-signed ones used
 everywhere else (see RESEARCH §7); a single client is shared per run.
@@ -43,9 +51,106 @@ log = logging.getLogger(__name__)
 DIFF_RATIO_OVERWRITE = 0.3  # >30% of assigned UPs changed -> rebuild instead of moving
 _ADD_USERS_BATCH = 50
 
+_DRY_RUN_NOTE = "dry run：只读预览，不产生任何远端写操作或备份文件"
 
-def push_overwrite(db: Session) -> dict:
-    """Backup, wipe native tags, recreate from local groups. Manual path."""
+
+def _local_member_sets(db: Session) -> tuple[dict[int, set[int]], int]:
+    """(group_id -> member mids, skipped non-missing UP count without any group)."""
+    rows = (
+        db.query(GroupMember.group_id, GroupMember.up_mid)
+        .join(UpUser, UpUser.mid == GroupMember.up_mid)
+        .filter(UpUser.missing.is_(False))
+        .all()
+    )
+    by_group: dict[int, set[int]] = {}
+    for group_id, mid in rows:
+        by_group.setdefault(group_id, set()).add(mid)
+    assigned = {mid for mids in by_group.values() for mid in mids}
+    total = db.query(UpUser).filter(UpUser.missing.is_(False)).count()
+    return by_group, max(total - len(assigned), 0)
+
+
+def plan_overwrite(db: Session) -> dict:
+    """Read-only preview of push_overwrite (remote GETs only)."""
+    if not load_cookies(db):
+        return {"mode": "overwrite", "dry_run": True, "skipped": "not_logged_in"}
+    c = build_client(db)
+    try:
+        remote = [t for t in list_tags(db, client=c) if t["bili_tag_id"]]
+        remote_names = {t["bili_tag_name"] for t in remote}
+        groups = db.query(GroupLocal).order_by(GroupLocal.sort_order).all()
+        local_names = {g.name for g in groups}
+        by_group, skipped = _local_member_sets(db)
+
+        conflicts: list[str] = []
+        would_move = 0
+        for group in groups:
+            tag = next((t for t in remote if t["bili_tag_name"] == group.name), None)
+            if tag is None:
+                continue
+            desired = by_group.get(group.id, set())
+            current = set(list_tag_users(db, tag["bili_tag_id"], client=c))
+            diff = len(desired ^ current)
+            if diff:
+                union = len(desired | current)
+                if union and diff / union > 0.5:
+                    conflicts.append(group.name)
+                would_move += diff
+        return {
+            "mode": "overwrite",
+            "dry_run": True,
+            "would_create_tags": sorted(local_names - remote_names),
+            "would_delete_tags": sorted(remote_names - local_names),
+            "would_move": would_move,
+            "skipped": skipped,
+            "conflicts": conflicts,
+            "notes": [_DRY_RUN_NOTE],
+        }
+    finally:
+        c.close()
+
+
+def plan_incremental(db: Session) -> dict:
+    """Read-only preview of push_incremental (remote GETs only)."""
+    if not load_cookies(db):
+        return {"mode": "incremental", "dry_run": True, "skipped": "not_logged_in"}
+    c = build_client(db)
+    try:
+        tags = list_tags(db, client=c)
+        by_name = {t["bili_tag_name"]: t["bili_tag_id"] for t in tags if t["bili_tag_id"]}
+        groups = db.query(GroupLocal).order_by(GroupLocal.sort_order).all()
+        by_group, skipped = _local_member_sets(db)
+
+        would_create = [g.name for g in groups if g.name not in by_name]
+        would_move = 0
+        for group in groups:
+            tag_id = by_name.get(group.name)
+            if not tag_id:
+                continue
+            desired = by_group.get(group.id, set())
+            current = set(list_tag_users(db, tag_id, client=c))
+            would_move += len(desired - current) + len(current - desired)
+        return {
+            "mode": "incremental",
+            "dry_run": True,
+            "would_create_tags": would_create,
+            "would_delete_tags": [],
+            "would_move": would_move,
+            "skipped": skipped,
+            "conflicts": [],
+            "notes": [_DRY_RUN_NOTE],
+        }
+    finally:
+        c.close()
+
+
+def push_overwrite(db: Session, dry_run: bool = False) -> dict:
+    """Backup, wipe native tags, recreate from local groups. Manual path.
+
+    dry_run=True returns plan_overwrite() without any remote write.
+    """
+    if dry_run:
+        return plan_overwrite(db)
     if not load_cookies(db):
         return {"skipped": "not_logged_in"}
     c = build_client(db)
@@ -68,14 +173,17 @@ def push_overwrite(db: Session) -> dict:
     }
 
 
-def push_incremental(db: Session) -> dict:
+def push_incremental(db: Session, dry_run: bool = False) -> dict:
     """Diff native tag members against local memberships (multi-group aware).
 
     Reads the actual member list of every tag mapped to a local group (GET,
     throttled), adds missing members, and moves removed members to the tag of
     their primary group (or the default tag). Falls back to a full overwrite
-    when the diff exceeds DIFF_RATIO_OVERWRITE.
+    when the diff exceeds DIFF_RATIO_OVERWRITE. dry_run=True returns
+    plan_incremental() without any remote write.
     """
+    if dry_run:
+        return plan_incremental(db)
     if not load_cookies(db):
         return {"skipped": "not_logged_in"}
     c = build_client(db)

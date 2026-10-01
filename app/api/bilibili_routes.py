@@ -19,6 +19,7 @@ from app.schemas import (
     BilibiliAccountOut,
     CookieIn,
     NativeGroupOut,
+    NativeOverwriteIn,
     NativePushIn,
     QrPollOut,
     QrStartOut,
@@ -228,7 +229,23 @@ def sync_native_groups(admin: CurrentAdmin, db: DbSession) -> list[NativeGroupOu
 
 
 @router.post("/native-groups/push")
-def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession) -> dict:
+def push_native_groups(
+    payload: NativePushIn,
+    admin: CurrentAdmin,
+    db: DbSession,
+    dry_run: bool = Query(default=False),
+) -> dict:
+    """Add members to a native tag. dry_run=true previews without writing."""
+    if dry_run:
+        plan = {
+            "mode": "push",
+            "dry_run": True,
+            "would_move": len(payload.mids),
+            "tag_id": payload.tag_id,
+            "notes": ["dry run：只读预览，不产生任何远端写操作"],
+        }
+        log_action(db, admin.username, "bilibili.native_groups_dry_run", detail={"mode": "push"})
+        return plan
     if get_settings().demo_mode:
         return {"ok": True, "added": len(payload.mids), "demo": True}
     from app.services.bilibili.native_groups import add_users_to_tag
@@ -244,12 +261,35 @@ def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession
 
 
 @router.post("/native-groups/push-overwrite")
-def push_native_groups_overwrite(admin: CurrentAdmin, db: DbSession) -> dict:
-    """Backup native tags, wipe them, rebuild from local groups (manual path)."""
+def push_native_groups_overwrite(
+    admin: CurrentAdmin,
+    db: DbSession,
+    payload: NativeOverwriteIn | None = None,
+) -> dict:
+    """Backup native tags, wipe them, rebuild from local groups (manual path).
+
+    Preview first: dry_run=true returns the plan (remote reads only) and must
+    be confirmed by a second call with dry_run=false.
+    """
+    dry_run = bool(payload.dry_run) if payload is not None else False
     if get_settings().demo_mode:
+        if dry_run:
+            return {
+                "mode": "overwrite",
+                "dry_run": True,
+                "would_create_tags": ["科技数码", "影像创作"],
+                "would_delete_tags": [],
+                "would_move": 12,
+                "skipped": 2,
+                "conflicts": [],
+                "notes": ["demo 预览：真实环境将先备份再重建原生分组"],
+            }
         return {"ok": True, "mode": "overwrite", "demo": True}
     from app.services import native_sync
 
-    result = native_sync.push_overwrite(db)
+    result = native_sync.push_overwrite(db, dry_run=dry_run)
+    if dry_run:
+        log_action(db, admin.username, "bilibili.native_groups_dry_run", detail={"mode": "overwrite"})
+        return result
     log_action(db, admin.username, "bilibili.native_groups_overwrite", detail={"mode": result.get("mode")})
     return {"ok": True, **result}

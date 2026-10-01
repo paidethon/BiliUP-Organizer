@@ -259,16 +259,16 @@ def test_run_sync_kind_full_merges_stats(db: Session, monkeypatch: pytest.Monkey
     monkeypatch.setattr(sync_service, "refresh_archives", lambda _db: 2)
     import app.services.native_sync as native_sync_module
 
-    monkeypatch.setattr(
-        native_sync_module,
-        "push_overwrite",
-        lambda _db: {"mode": "overwrite", "created_tags": 0, "placed": 0},
-    )
+    def _fail_push(_db):  # noqa: ANN001
+        raise AssertionError("full sync must not push native groups")
+
+    monkeypatch.setattr(native_sync_module, "push_overwrite", _fail_push)
 
     stats = sync_service.run_sync_kind(db, "full")
 
     # followings keys stay unprefixed; history keys are namespaced because the
-    # old flat merge let history["new"] clobber the followings "new"
+    # old flat merge let history["new"] clobber the followings "new".
+    # Native pushes are decoupled: "full" never includes them.
     assert stats["total"] == 2
     assert stats["updated"] == 1
     assert stats["archives_refreshed"] == 2
@@ -276,7 +276,7 @@ def test_run_sync_kind_full_merges_stats(db: Session, monkeypatch: pytest.Monkey
     assert stats["history_new"] == 3
     assert stats["ups_touched"] == 1
     assert stats["new"] == 1
-    assert stats["native"]["mode"] == "overwrite"
+    assert "native" not in stats
 
     with pytest.raises(ValueError):
         sync_service.run_sync_kind(db, "nope")
