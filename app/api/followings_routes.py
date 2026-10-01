@@ -262,7 +262,8 @@ def bulk_action(payload: BulkIn, admin: CurrentAdmin, db: DbSession) -> BulkOut:
 
     ups = db.query(UpUser).filter(UpUser.mid.in_(mids)).all() if mids else []
     if not ups:
-        raise not_found("no matching up users")
+        # an empty selection is a no-op, not an error — report it plainly
+        return BulkOut(ok=True, changed=0, undo_id=None)
     now = datetime.now(UTC)
     params = payload.params
     changed = 0

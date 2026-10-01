@@ -309,10 +309,6 @@ class ClassificationJobOut(OrmModel):
     created_at: str
     finished_at: str | None
 
-    @property
-    def progress(self) -> float:
-        return round(self.processed / self.total, 4) if self.total else 0.0
-
 
 class ClassificationJobListOut(BaseModel):
     items: list[ClassificationJobOut]

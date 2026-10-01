@@ -357,6 +357,12 @@ def demo_classify_batch(
         if up is None:
             result["failed"] += 1
             continue
+        # same idempotency rule as the real classifier: replace open
+        # suggestions instead of stacking duplicates on re-runs
+        db.query(AiSuggestion).filter(
+            AiSuggestion.up_mid == mid,
+            AiSuggestion.status.in_(("pending", "unclassifiable")),
+        ).delete(synchronize_session=False)
         if mid % 17 == 0:
             up.ai_status = "error"
             result["failed"] += 1

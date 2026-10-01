@@ -45,7 +45,7 @@ tags; the mapping only materializes during an explicit push.
 | POST | /followings/bulk | `{mids?[], query?, exclude_mids?[], action, params}` → `{ok, changed, undo_id}`. `mids` (≤10000) XOR `query` (same filters as GET /followings) + `exclude_mids`. Actions: `set_group{group_id}, add_to_group{group_id}, remove_from_group{group_id}, clear_group, mark_watched, snooze{days}, unsnooze, blacklist{value}, restore, add_tags{tags:[names]}, remove_tags{tags}, set_status{labels}, clear_status{labels?}, native_move{tag_id}, unfollow{confirm:true}`. Local actions return an `undo_id`; remote/destructive ones (`native_move`, `unfollow`) do not |
 | GET | /followings/undo | recent undoable bulk operations `{items: [{id, action, summary, status, item_count, created_at, expires_at}]}` |
 | POST | /followings/undo/{id} | revert one bulk operation → `{ok, restored}` |
-| GET | /statuses | explicit status labels with UP counts |
+| GET | /followings/statuses | explicit status labels with UP counts |
 | GET | /groups | list with `up_count` and `aliases[]` |
 | POST | /groups | `{name,color?,sort_order?,is_important?,description?}` — no quantity cap |
 | PATCH | /groups/{id} | partial update |
@@ -73,7 +73,7 @@ computed from sync data and filtered via `flag`, not stored.
 | POST | /review/decide | `{ids:[], decision: accept\|reject\|unclassifiable}`; accept applies category+tags (creates a missing category after explicit user confirmation) |
 | POST | /review/run | `{batch_size?, instruction?, auto_apply?, threshold?}` single batch (legacy entry point) |
 | GET | /review/status | `{configured, model, pending_count, unclassifiable_count, last_run}` |
-| POST | /review/jobs | `{kind: pending\|full, batch_size?, auto_apply?, threshold?}` → create + start the persistent full-library job (409 if one is already running/paused). `pending` = only unclassified/errored UPs; `full` = every UP |
+| POST | /review/jobs | `{kind: pending\|full, batch_size?, auto_apply?, threshold?}` → create + start the persistent full-library job (400 `classification_job_active` if one is already running/paused). `pending` = only unclassified/errored UPs; `full` = every UP |
 | GET | /review/jobs/current | latest job or null |
 | GET | /review/jobs | recent jobs |
 | POST | /review/jobs/{id}/pause | pauses between batches |

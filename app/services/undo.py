@@ -131,7 +131,11 @@ def undo(db: Session, record_id: int, actor: str) -> dict:  # noqa: ARG001
         raise bad_request(f"undo record {record_id} has expired")
 
     payload = _load_payload(rec.payload_json)
+    if rec.action != "group_merge" and rec.action not in UNDOABLE_ACTIONS:
+        raise bad_request(f"unknown undo action: {rec.action}")
     restored = _revert(db, rec.action, payload)
+    if restored == 0:
+        raise bad_request("nothing to restore (state already matches)")
     rec.status = "undone"
     db.commit()
     return {"restored": restored}

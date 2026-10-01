@@ -18,7 +18,7 @@ export function MergeModal({
   source: Group | null;
   groups: Group[];
   onClose: () => void;
-  onMerged?: (message: string) => void;
+  onMerged?: (message: string, undoId: number | null) => void;
 }) {
   const queryClient = useQueryClient();
   const [intoId, setIntoId] = useState<number | "">("");
@@ -31,14 +31,14 @@ export function MergeModal({
 
   const mergeMutation = useMutation({
     mutationFn: (target: number) =>
-      api<{ ok: boolean; moved: number }>(`/groups/${source?.id}/merge`, {
+      api<{ ok: boolean; moved: number; undo_id: number | null }>(`/groups/${source?.id}/merge`, {
         method: "POST",
         body: { into_id: target },
       }),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
       void queryClient.invalidateQueries({ queryKey: ["followings"] });
-      onMerged?.(`已合并「${source?.name}」，移动了 ${res.moved} 个 UP，可撤销`);
+      onMerged?.(`已合并「${source?.name}」，移动了 ${res.moved} 个 UP`, res.undo_id);
       onClose();
     },
     onError: (err) => setError(errText(err, "合并失败，请重试")),
@@ -60,7 +60,7 @@ export function MergeModal({
               "并入所选目标分组，源分组将被删除。"
             )}
           </p>
-          <p className="text-xs text-slate-500">合并后可通过批量操作条上的「撤销」恢复（24 小时内）。</p>
+          <p className="text-xs text-slate-500">合并后可通过页面顶部提示中的「撤销」恢复（24 小时内）。</p>
           <label className="block text-xs text-slate-400">
             目标分组
             <select

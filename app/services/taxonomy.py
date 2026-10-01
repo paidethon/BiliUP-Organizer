@@ -46,17 +46,21 @@ def normalize_name(name: str) -> str:
 
 
 def similar_names(a: str, b: str) -> bool:
-    """Loose equality for near-duplicate category names (数码科技 ≈ 科技数码)."""
+    """Near-duplicate detection for category names (科技区 ≈ 科技, 数码科技 ≈
+    科技数码, 科技 ≈ 科技数码). Containment counts only as a strict PREFIX with
+    a ≤2-char remainder (X → X+短修饰词): 游戏 vs 主机游戏 or 美食 vs 美食生活
+    suffix-variants stay separate — those are intentional distinct categories
+    and belong behind explicit aliases, not fuzzy merging."""
     na, nb = normalize_name(a), normalize_name(b)
     if not na or not nb:
         return False
     if na == nb:
         return True
-    short, long_ = sorted((na, nb), key=len)
-    if short in long_:
-        return len(short) >= 2
     # reordered compounds (科技数码 / 数码科技) share the same character multiset
     if sorted(na) == sorted(nb):
+        return True
+    short, long_ = sorted((na, nb), key=len)
+    if long_.startswith(short) and 0 < len(long_) - len(short) <= 2:
         return True
     ratio = SequenceMatcher(None, na, nb).ratio()
     return ratio >= (0.8 if len(na) <= 4 else 0.72)
@@ -202,11 +206,11 @@ def resolve_group(db: Session, name: str) -> GroupLocal | None:
     alias = db.query(GroupAlias).filter(GroupAlias.alias == clean).first()
     if alias is not None:
         return db.get(GroupLocal, alias.group_id)
-    for group in db.query(GroupLocal).all():
+    for group in db.query(GroupLocal).order_by(GroupLocal.id).all():
         if similar_names(clean, group.name):
             _register_alias(db, group.id, clean, source="auto")
             return group
-    for alias in db.query(GroupAlias).all():
+    for alias in db.query(GroupAlias).order_by(GroupAlias.id).all():
         if similar_names(clean, alias.alias):
             _register_alias(db, alias.group_id, clean, source="auto")
             return db.get(GroupLocal, alias.group_id)
@@ -352,6 +356,14 @@ def restore_merged_group(db: Session, snapshot: dict) -> None:
         up = db.query(UpUser).filter(UpUser.mid == mid).first()
         if up is not None and up.group_id == target_id:
             up.group_id = group.id
+    # restore aliases: pull each one back off the target (merge re-pointed it
+    # there and also registered source-name -> target), then re-register onto
+    # the recreated group so post-restore resolution behaves as before
+    merged_alias_names = [a["alias"] for a in snapshot["aliases"]]
+    db.query(GroupAlias).filter(GroupAlias.alias.in_(merged_alias_names + [src["name"]])).delete(
+        synchronize_session=False
+    )
+    db.flush()
     for alias in snapshot["aliases"]:
         _register_alias(db, group.id, alias["alias"], source=alias["source"])
     db.query(NativeGroupMap).filter(NativeGroupMap.id.in_(snapshot["native_map_ids"])).update(

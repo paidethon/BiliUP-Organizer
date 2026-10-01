@@ -216,11 +216,15 @@ def cancel_job(db: Session, job_id: int) -> ClassificationJob:
 
 def retry_failures(db: Session, job_id: int) -> ClassificationJob:
     """Requeue only the failed mids; counters for them are rolled back so the
-    retried batches count towards the same totals."""
+    retried batches count towards the same totals. Replacing the cursor is
+    only safe once the original queue is fully drained — otherwise the
+    unprocessed remainder would be silently dropped."""
     job = _get_job(db, job_id)
     if job.status not in ("completed", "failed", "paused"):
         raise bad_request("classification_job_not_retryable")
     cursor = _load_cursor(job.cursor_json)
+    if cursor["index"] < len(cursor["mids"]):
+        raise bad_request("classification_job_cursor_pending")
     failed_mids = list(cursor["failed"])
     if job.failed <= 0 or not failed_mids:
         raise bad_request("classification_job_no_failures")

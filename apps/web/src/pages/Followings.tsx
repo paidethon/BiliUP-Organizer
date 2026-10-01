@@ -81,6 +81,14 @@ export default function Followings() {
     setSelectAllFiltered(false);
   }
 
+  // 选择集只对产生它时的筛选有效：筛选/排序/模式一变就整体作废，
+  // 否则「全选筛选结果 − 排除集」会按新筛选解析出与用户所见不符的范围。
+  useEffect(() => {
+    setSelected(new Set());
+    setExcluded(new Set());
+    setSelectAllFiltered(false);
+  }, [q, groupId, flag, status, sort, order, mode]);
+
   const bulkMutation = useMutation({
     mutationFn: (vars: { action: string; params?: Record<string, unknown> }) => {
       // 全选筛选结果 → 按条件整包提交（减去手动取消的）；否则按勾选 mids。均一次请求。

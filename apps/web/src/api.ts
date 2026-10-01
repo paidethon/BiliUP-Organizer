@@ -118,7 +118,7 @@ export interface Suggestion {
   status: string;
   created_at: string;
   current_group_name: string | null;
-  recent_videos: { title: string; tname: string | null; pubdate: string | null }[];
+  recent_videos: { bvid?: string; title: string; tname?: string | null; pubdate: string | null }[];
   status_labels: string[];
 }
 
@@ -175,12 +175,12 @@ export interface SyncRun {
 export interface NativePlan {
   mode: string;
   dry_run: boolean;
-  would_create_tags: string[];
-  would_delete_tags: string[];
-  would_move: number;
-  skipped: number;
-  conflicts: string[];
-  notes: string[];
+  would_create_tags?: string[];
+  would_delete_tags?: string[];
+  would_move?: number;
+  skipped?: number | string;
+  conflicts?: string[];
+  notes?: string[];
 }
 
 export interface Paged<T> {

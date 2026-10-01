@@ -81,14 +81,15 @@ export function NativeSyncCard() {
       </div>
       {plan && (
         <div className="rounded-[var(--lumi-radius)] border border-slate-700/70 bg-slate-900/40 p-3 text-xs text-slate-300 space-y-1">
-          <p className="text-slate-400">{plan.mode === "overwrite" ? "覆盖重建计划" : "增量计划"}（{plan.notes[0]}）</p>
+          <p className="text-slate-400">{plan.mode === "overwrite" ? "覆盖重建计划" : "增量计划"}（{plan.notes?.[0]}）</p>
           <p>
-            预计创建分组：{plan.would_create_tags.length ? plan.would_create_tags.join("、") : "无"}；
-            预计删除分组：{plan.would_delete_tags.length ? plan.would_delete_tags.join("、") : "无"}
+            预计创建分组：{plan.would_create_tags?.length ? plan.would_create_tags.join("、") : "无"}；
+            预计删除分组：{plan.would_delete_tags?.length ? plan.would_delete_tags.join("、") : "无"}
           </p>
           <p>
-            预计移动成员：{plan.would_move}；预计跳过：{plan.skipped}
-            {plan.conflicts.length ? `；冲突：${plan.conflicts.join("、")}` : ""}
+            预计移动成员：{plan.would_move ?? 0}
+            ；预计跳过：{plan.skipped ?? 0}
+            {plan.conflicts?.length ? `；冲突：${plan.conflicts.join("、")}` : ""}
           </p>
         </div>
       )}

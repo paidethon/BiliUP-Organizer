@@ -29,7 +29,8 @@ export default function Groups() {
   const [aliasing, setAliasing] = useState<Group | null>(null);
   const [formError, setFormError] = useState("");
   const [deleteError, setDeleteError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<{ text: string; undoId: number | null } | null>(null);
+  const [undoing, setUndoing] = useState(false);
 
   const similarQuery = useQuery({
     queryKey: ["groups", "similar"],
@@ -73,9 +74,21 @@ export default function Groups() {
     onError: (err) => setDeleteError(errText(err, "删除失败，请重试")),
   });
 
-  function invalidateWithNotice(message: string) {
-    setNotice(message);
+  function invalidateWithNotice(message: string, undoId: number | null = null) {
+    setNotice({ text: message, undoId });
     invalidate();
+  }
+
+  async function undoMerge() {
+    if (!notice?.undoId) return;
+    setUndoing(true);
+    try {
+      await api(`/followings/undo/${notice.undoId}`, { method: "POST" });
+      setNotice({ text: "已撤销合并", undoId: null });
+      invalidate();
+    } finally {
+      setUndoing(false);
+    }
   }
 
   const reorderMutation = useMutation({
@@ -167,8 +180,13 @@ export default function Groups() {
 
       {notice && (
         <p className="text-xs text-emerald-300 flex items-center gap-2" role="status">
-          {notice}
-          <button type="button" className="text-slate-500" onClick={() => setNotice("")} aria-label="关闭提示">
+          {notice.text}
+          {notice.undoId && (
+            <Button variant="ghost" onClick={() => void undoMerge()} disabled={undoing} aria-label="撤销合并">
+              {undoing ? "撤销中…" : "撤销"}
+            </Button>
+          )}
+          <button type="button" className="text-slate-500" onClick={() => setNotice(null)} aria-label="关闭提示">
             ✕
           </button>
         </p>

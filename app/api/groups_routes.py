@@ -118,7 +118,7 @@ def merge_group(group_id: int, payload: GroupMergeIn, admin: CurrentAdmin, db: D
         entity_id=group_id,
         detail={"into_id": payload.into_id, "moved": moved, "undo_id": record.id},
     )
-    return {"ok": True, "moved": moved}
+    return {"ok": True, "moved": moved, "undo_id": record.id}
 
 
 @router.post("/{group_id}/aliases")

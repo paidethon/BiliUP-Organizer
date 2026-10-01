@@ -318,13 +318,11 @@ def test_bulk_validation(client: TestClient) -> None:
         ).status_code
         == 400
     )
-    # query with no hits
-    assert (
-        client.post(
-            "/api/v1/followings/bulk", json={"query": {"q": "绝不存在的UPxyz"}, "action": "snooze"}
-        ).status_code
-        == 404
+    # query with no hits -> a plain no-op, not an error
+    no_hit = client.post(
+        "/api/v1/followings/bulk", json={"query": {"q": "绝不存在的UPxyz"}, "action": "snooze"}
     )
+    assert no_hit.status_code == 200 and no_hit.json()["changed"] == 0
 
 
 def test_tags_crud_and_followings_filter(client: TestClient) -> None:
@@ -375,18 +373,22 @@ def test_groups_merge_similar_aliases(client: TestClient) -> None:
     source = next(g for g in groups if g["id"] == gid_a)
     assert source["aliases"].count("源组别名") == 1
 
-    # 源组区 normalizes to 源组, contained in 合并源组 -> a similar-name cluster
-    client.post("/api/v1/groups", json={"name": "源组区"})
+    # 合并源组区 normalizes to 合并源组 (suffix 区 stripped) -> similar-name cluster
+    client.post("/api/v1/groups", json={"name": "合并源组区"})
     clusters = client.get("/api/v1/groups/similar").json()["clusters"]
     hit = [c for c in clusters if "合并源组" in c["names"]]
-    assert hit and "源组区" in hit[0]["names"]
+    assert hit and "合并源组区" in hit[0]["names"]
 
     assert client.post(f"/api/v1/groups/{gid_a}/merge", json={"into_id": gid_a}).status_code == 400
     assert client.post(f"/api/v1/groups/{gid_a}/merge", json={"into_id": 987654321}).status_code == 404
 
     merged = client.post(f"/api/v1/groups/{gid_a}/merge", json={"into_id": gid_b})
     assert merged.status_code == 200
-    assert merged.json() == {"ok": True, "moved": 1}
+    body = merged.json()
+    assert body["ok"] is True and body["moved"] == 1 and body["undo_id"]
+    # after the merge the source's alias and source-name alias live on the target
+    target_after = next(g for g in client.get("/api/v1/groups").json() if g["id"] == gid_b)
+    assert "源组别名" in target_after["aliases"] and "合并源组" in target_after["aliases"]
     assert mid not in [
         item["mid"]
         for item in client.get("/api/v1/followings", params={"all": "true", "group_id": "none"}).json()[
@@ -400,8 +402,14 @@ def test_groups_merge_similar_aliases(client: TestClient) -> None:
     restored = client.post(f"/api/v1/followings/undo/{merge_records[0]['id']}")
     assert restored.status_code == 200 and restored.json()["restored"] == 1
 
-    names = [g["name"] for g in client.get("/api/v1/groups").json()]
+    groups_after_undo = client.get("/api/v1/groups").json()
+    names = [g["name"] for g in groups_after_undo]
     assert "合并源组" in names
+    # aliases move BACK to the restored source; target keeps none of them
+    source_after = next(g for g in groups_after_undo if g["name"] == "合并源组")
+    assert "源组别名" in source_after["aliases"]
+    target_after_undo = next(g for g in groups_after_undo if g["id"] == gid_b)
+    assert "源组别名" not in target_after_undo["aliases"] and "合并源组" not in target_after_undo["aliases"]
     up = client.get(f"/api/v1/followings/{mid}").json()["up"]
     assert up["group_name"] == "合并源组"
 

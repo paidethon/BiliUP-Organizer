@@ -73,7 +73,16 @@ def _local_member_sets(db: Session) -> tuple[dict[int, set[int]], int]:
 def plan_overwrite(db: Session) -> dict:
     """Read-only preview of push_overwrite (remote GETs only)."""
     if not load_cookies(db):
-        return {"mode": "overwrite", "dry_run": True, "skipped": "not_logged_in"}
+        return {
+            "mode": "overwrite",
+            "dry_run": True,
+            "would_create_tags": [],
+            "would_delete_tags": [],
+            "would_move": 0,
+            "skipped": "not_logged_in",
+            "conflicts": [],
+            "notes": ["未登录 Bilibili，无法读取远端分组；请先在「B 站账号」登录后再预览"],
+        }
     c = build_client(db)
     try:
         remote = [t for t in list_tags(db, client=c) if t["bili_tag_id"]]
@@ -113,7 +122,16 @@ def plan_overwrite(db: Session) -> dict:
 def plan_incremental(db: Session) -> dict:
     """Read-only preview of push_incremental (remote GETs only)."""
     if not load_cookies(db):
-        return {"mode": "incremental", "dry_run": True, "skipped": "not_logged_in"}
+        return {
+            "mode": "incremental",
+            "dry_run": True,
+            "would_create_tags": [],
+            "would_delete_tags": [],
+            "would_move": 0,
+            "skipped": "not_logged_in",
+            "conflicts": [],
+            "notes": ["未登录 Bilibili，无法读取远端分组；请先在「B 站账号」登录后再预览"],
+        }
     c = build_client(db)
     try:
         tags = list_tags(db, client=c)

@@ -381,6 +381,13 @@ def classify_batch(
         except (TypeError, ValueError):
             confidence = 0.0
         name = str(item.get("group") or "").strip()[:64]
+        # re-classification and post-pause batch re-runs must replace, not
+        # stack: drop the previous open suggestion for this UP (decided
+        # accepted/rejected history is kept)
+        db.query(AiSuggestion).filter(
+            AiSuggestion.up_mid == mid,
+            AiSuggestion.status.in_(("pending", "unclassifiable")),
+        ).delete(synchronize_session=False)
         suggestion = AiSuggestion(
             up_mid=mid,
             suggested_tags=json.dumps(tags, ensure_ascii=False),
