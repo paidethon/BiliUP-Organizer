@@ -28,6 +28,9 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
         from app.demo import seed
 
         seed(get_session_factory()())
+    from app.services.classification_jobs import recover_interrupted_jobs
+
+    recover_interrupted_jobs()
     from app.scheduler import start_scheduler
 
     start_scheduler()
@@ -94,6 +97,7 @@ def create_app() -> FastAPI:
         review_routes,
         settings_routes,
         system_routes,
+        tags_routes,
         weekly_routes,
     )
 
@@ -108,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(weekly_routes.router, prefix="/api/v1")
     app.include_router(feeds_routes.router, prefix="/api/v1")
     app.include_router(system_routes.router, prefix="/api/v1")
+    app.include_router(tags_routes.router, prefix="/api/v1")
 
     @app.get("/healthz")
     def healthz() -> dict:
