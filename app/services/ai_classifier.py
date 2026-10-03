@@ -68,6 +68,92 @@ _CHAT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 _UNCLASSIFIABLE = "无法确定"
 
+# Duration-derived secondary groups: an UP joins 长视频 only when >=5 of its
+# latest 10 uploads exceed 20 minutes, 碎片时间 when >=5 are under 5 minutes.
+# These are computed server-side from cached video lengths — never taken from
+# the model — and are applied only alongside a real content category, so an UP
+# can never sit in one of them alone.
+DURATION_GROUPS: dict[str, tuple[str, int, int]] = {
+    # name -> (comparison, threshold_seconds, min_count_of_latest_10)
+    "长视频": (">", 1200, 5),
+    "碎片时间": ("<", 300, 5),
+}
+
+
+def _duration_seconds(raw: object) -> int | None:
+    """Video length in seconds; accepts "SS", "MM:SS", "HH:MM:SS" and numeric strings."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if all(p.isdigit() for p in parts) and len(parts) <= 3:
+        seconds = 0
+        for part in parts:
+            seconds = seconds * 60 + int(part)
+        return seconds
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        return None
+
+
+def _duration_label(seconds: int | None) -> str:
+    if seconds is None:
+        return ""
+    minutes = seconds / 60
+    return f"{minutes:.0f}分" if minutes >= 1 else "<1分"
+
+
+def _duration_tallies_and_lines(
+    rows: list[tuple[int, str, str | None, str | None, object]], now: datetime
+) -> dict[int, dict[str, Any]]:
+    """Per-UP prompt lines (latest 10, durations included) + long/short counts
+    over those same 10 uploads, from one ordered row list."""
+    data: dict[int, dict[str, Any]] = {}
+    for up_mid, title, tname, pubdate, duration in rows:
+        bucket = data.setdefault(up_mid, {"count": 0, "lines": [], "samples": [], "long10": 0, "short10": 0})
+        bucket["count"] += 1
+        if not title or len(bucket["lines"]) >= 10:
+            continue
+        rel = _relative_time(pubdate, now)
+        secs = _duration_seconds(duration)
+        if secs is not None:
+            if secs > 1200:
+                bucket["long10"] += 1
+            elif secs < 300:
+                bucket["short10"] += 1
+        entry = f"{rel}:{title[:20]}" if rel else title[:20]
+        label = _duration_label(secs)
+        if label:
+            entry += f"({label})"
+        if tname:
+            entry += f"[{tname[:6]}]"
+        bucket["lines"].append(entry)
+        if len(bucket["samples"]) < 3:
+            bucket["samples"].append(title[:20])
+    return data
+
+
+def duration_groups_for_bucket(bucket: dict[str, Any] | None) -> list[str]:
+    """Which duration groups an UP qualifies for, from _video_data tallies."""
+    if not bucket:
+        return []
+    out: list[str] = []
+    for name, (op, _threshold, needed) in DURATION_GROUPS.items():
+        count = bucket.get("long10" if op == ">" else "short10", 0)
+        if count >= needed:
+            out.append(name)
+    return out
+
+
+def duration_groups_for(db: Session, mid: int) -> list[str]:
+    """Single-UP variant used at accept time so approval enforces the same
+    duration rule against current data, not stale suggestions."""
+    bucket = _video_data(db, [mid], datetime.now()).get(mid)
+    return duration_groups_for_bucket(bucket)
+
 
 def _ai_config(db: Session) -> dict[str, Any]:
     cfg = get_section_raw(db, "ai")
@@ -132,28 +218,20 @@ def _video_counts(db: Session, mids: list[int]) -> dict[int, int]:
 
 def _video_data(db: Session, mids: list[int], now: datetime) -> dict[int, dict[str, Any]]:
     """One IN query, then per-UP: prompt lines (top 10, newest first, with
-    relative timestamps), evidence samples (top 3 titles) and upload count."""
-    data: dict[int, dict[str, Any]] = {mid: {"count": 0, "lines": [], "samples": []} for mid in mids}
+    relative timestamps and durations), evidence samples (top 3 titles),
+    upload count, and long/short-duration tallies over the latest 10."""
+    data: dict[int, dict[str, Any]] = {
+        mid: {"count": 0, "lines": [], "samples": [], "long10": 0, "short10": 0} for mid in mids
+    }
     if not mids:
         return data
     rows = (
-        db.query(Video.up_mid, Video.title, Video.tname, Video.pubdate)
+        db.query(Video.up_mid, Video.title, Video.tname, Video.pubdate, Video.duration)
         .filter(Video.up_mid.in_(mids))
         .order_by(Video.up_mid.asc(), Video.pubdate.desc())
         .all()
     )
-    for up_mid, title, tname, pubdate in rows:
-        bucket = data.setdefault(up_mid, {"count": 0, "lines": [], "samples": []})
-        bucket["count"] += 1
-        if not title or len(bucket["lines"]) >= 10:
-            continue
-        rel = _relative_time(pubdate, now)
-        entry = f"{rel}:{title[:20]}" if rel else title[:20]
-        if tname:
-            entry += f"[{tname[:6]}]"
-        bucket["lines"].append(entry)
-        if len(bucket["samples"]) < 3:
-            bucket["samples"].append(title[:20])
+    data.update(_duration_tallies_and_lines([(r[0], r[1], r[2], r[3], r[4]) for r in rows], now))
     return data
 
 
@@ -191,7 +269,7 @@ def _previous_group_names(db: Session, ups: list[UpUser]) -> dict[int, str | Non
 def _build_prompt(ups: list[UpUser], group_names: list[str], video_data: dict[int, dict[str, Any]]) -> str:
     lines = [
         f"已有分组：{'、'.join(group_names)}",
-        "UP列表（mid|昵称|签名|最近投稿 相对时间:标题[分区]，最多10条，越靠前越新）：",
+        "UP列表（mid|昵称|签名|最近投稿 相对时间:标题(时长)[分区]，最多10条，越靠前越新）：",
     ]
     for up in ups:
         sign = (up.sign or "").replace("|", "／")[:60]
@@ -342,7 +420,7 @@ def classify_batch(
     if instruction:
         # appended at the END so the cached prefix (system + group list + UP
         # rows) stays byte-stable across batches with different instructions
-        prompt += "\n补充要求：" + instruction.strip()[:300]
+        prompt += "\n补充要求：" + instruction.strip()[:800]
     provider = urlparse(str(cfg["base_url"])).netloc
     evidence = {
         mid: {
@@ -375,12 +453,20 @@ def classify_batch(
         if up is None or mid in seen:
             continue
         seen.add(mid)
-        tags = _clean_tags(item.get("tags"))
+        # duration groups are decided by server-side video lengths only; the
+        # model's opinion about them is discarded wherever it appears
+        duration_tags = duration_groups_for_bucket(video_data.get(mid))
+        tags = [t for t in _clean_tags(item.get("tags")) if t not in DURATION_GROUPS]
+        for extra in duration_tags:
+            if extra not in tags:
+                tags.append(extra)
         try:
             confidence = max(0.0, min(1.0, float(item.get("confidence", 0))))
         except (TypeError, ValueError):
             confidence = 0.0
         name = str(item.get("group") or "").strip()[:64]
+        if name in DURATION_GROUPS:
+            name = ""  # a duration group can never be the content category
         # re-classification and post-pause batch re-runs must replace, not
         # stack: drop the previous open suggestion for this UP (decided
         # accepted/rejected history is kept)
@@ -429,8 +515,15 @@ def classify_batch(
         elif auto_apply and confidence >= threshold:
             up.group_id = group.id  # primary
             memberships.add_membership(db, up, group.id)
-            if tags:
-                taxonomy.set_up_tags(db, mid, tags, source="ai")
+            content_tags = [t for t in tags if t not in DURATION_GROUPS]
+            if content_tags:
+                taxonomy.set_up_tags(db, mid, content_tags, source="ai")
+            # duration groups join as SECONDARY memberships next to the just
+            # applied content category — never on their own
+            for duration_name in duration_tags:
+                duration_group, _ = taxonomy.ensure_group(db, duration_name)
+                if duration_group is not None:
+                    memberships.add_membership(db, up, duration_group.id)
             taxonomy.clear_status_labels(db, mid, ["待整理", "无法确定"])
             up.ai_status = "done"
             suggestion.status = "accepted"

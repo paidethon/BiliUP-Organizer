@@ -128,7 +128,7 @@ backfills `ai_suggestions.previous_group_name` for old rows.
 
 | Job | Default schedule | Behaviour |
 | --- | --- | --- |
-| followings sync | every 6h (setting) | pull followings, upsert, detect new/missing |
+| followings sync | daily 03:00 Asia/Shanghai | pull followings, upsert, detect new/missing |
 | watch-history sync | every 2h | pull recent history, update last_watched |
 | native groups sync | every 6h | diff-based incremental push — skipped unless `sync.native_push_enabled` |
 | reminder scan | every 24h (setting) | evaluate rules, create/dedupe/resolve reminders |

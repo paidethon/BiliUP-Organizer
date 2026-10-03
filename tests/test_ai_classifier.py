@@ -26,7 +26,7 @@ get_settings()
 from app.db import get_session_factory  # noqa: E402
 from app.errors import ApiError  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import AiSuggestion, GroupAlias, GroupLocal, UpUser, Video  # noqa: E402
+from app.models import AiSuggestion, GroupAlias, GroupLocal, UpStatusLabel, UpUser, Video  # noqa: E402
 from app.schemas import ReviewDecideIn  # noqa: E402
 from app.services import memberships, taxonomy  # noqa: E402
 from app.services.ai_classifier import (  # noqa: E402
@@ -511,3 +511,96 @@ def test_connection_ok_and_fail(db, configured_ai) -> None:  # noqa: ANN001
     respx.post(f"{AI_BASE}/chat/completions").mock(return_value=httpx.Response(503))
     ok, message = test_connection(db)
     assert not ok and "失败" in message
+
+
+# ------------------------------------------------- duration-derived groups
+
+
+def _add_videos(db, mid: int, durations: list[str]) -> None:  # noqa: ANN001
+    for i, secs in enumerate(durations):
+        db.add(
+            Video(
+                bvid=f"BV{mid}i{i}",
+                up_mid=mid,
+                title=f"视频{i}",
+                pubdate=f"2026-09-{10 + i:02d} 00:00:00",
+                duration=secs,
+            )
+        )
+    db.commit()
+
+
+def test_duration_seconds_parser() -> None:
+    from app.services.ai_classifier import _duration_seconds
+
+    assert _duration_seconds("25:00") == 1500
+    assert _duration_seconds("1:05:30") == 3930
+    assert _duration_seconds("59") == 59
+    assert _duration_seconds("90.5") == 90
+    assert _duration_seconds(None) is None
+    assert _duration_seconds("abc") is None
+
+
+@respx.mock
+def test_long_video_group_flows_to_membership_on_accept(db, configured_ai) -> None:  # noqa: ANN001
+    from app.api.review_routes import decide as decide_route
+
+    up = _make_up(db, "时长测试UP", 910000030)
+    _add_videos(db, up.mid, ["25:00"] * 6 + ["1:00"] * 2)
+    respx.post(f"{AI_BASE}/chat/completions").mock(
+        return_value=_ai_response(
+            f'[{{"mid": {up.mid}, "group": "游戏", "tags": ["长视频"], "confidence": 0.8, "r": "游戏视频"}}]'
+        )
+    )
+    classify_batch(db, [up.mid])  # explicit batch: shared DB holds other unclassified UPs
+    suggestion = _suggestion(db, up.mid)
+    assert suggestion.suggested_group_name == "游戏"
+    assert "长视频" in json.loads(suggestion.suggested_tags)
+
+    decide_route(ReviewDecideIn(ids=[suggestion.id], decision="accept"), _Admin(), db)
+    names = {g.name for g in memberships.groups_of(db, up.mid)}
+    assert names == {"游戏", "长视频"}  # duration group applied alongside, never alone
+    assert "长视频" not in [t.name for t in taxonomy.tags_of(db, up.mid)]  # group dimension
+
+
+@respx.mock
+def test_duration_group_as_sole_category_becomes_unclassifiable(db, configured_ai) -> None:  # noqa: ANN001
+    up = _make_up(db, "纯时长UP", 910000031)
+    _add_videos(db, up.mid, ["30:00"] * 8)
+    respx.post(f"{AI_BASE}/chat/completions").mock(
+        return_value=_ai_response(f'[{{"mid": {up.mid}, "group": "长视频", "confidence": 0.9, "r": "长"}}]')
+    )
+    classify_batch(db, [up.mid])
+    suggestion = _suggestion(db, up.mid)
+    assert suggestion.status == "unclassifiable"  # no content category -> human review
+    assert memberships.groups_of(db, up.mid) == []
+    labels = {row[0] for row in db.query(UpStatusLabel.label).filter(UpStatusLabel.up_mid == up.mid).all()}
+    assert "待整理" in labels
+
+
+@respx.mock
+def test_duration_tag_stripped_when_criterion_not_met(db, configured_ai) -> None:  # noqa: ANN001
+    up = _make_up(db, "假长视频UP", 910000032)
+    _add_videos(db, up.mid, ["25:00", "30:00"] + ["2:00"] * 6)  # only 2/10 are long
+    respx.post(f"{AI_BASE}/chat/completions").mock(
+        return_value=_ai_response(
+            f'[{{"mid": {up.mid}, "group": "数码", "tags": ["长视频"], "confidence": 0.8, "r": "x"}}]'
+        )
+    )
+    classify_batch(db, [up.mid])
+    assert "长视频" not in json.loads(_suggestion(db, up.mid).suggested_tags)
+
+
+@respx.mock
+def test_auto_apply_adds_duration_membership(db, configured_ai) -> None:  # noqa: ANN001
+    up = _make_up(db, "碎片时间UP", 910000033)
+    _add_videos(db, up.mid, ["3:00"] * 7 + ["40:00"] * 1)
+    respx.post(f"{AI_BASE}/chat/completions").mock(
+        return_value=_ai_response(
+            f'[{{"mid": {up.mid}, "group": "搞笑段子", "confidence": 0.95, "r": "短剧"}}]'
+        )
+    )
+    classify_batch(db, [up.mid], auto_apply=True, threshold=0.9)
+    names = {g.name for g in memberships.groups_of(db, up.mid)}
+    assert names == {"搞笑段子", "碎片时间"}
+    assert up.ai_status == "done"

@@ -20,6 +20,7 @@ from app.schemas import (
     SuggestionOut,
 )
 from app.services import memberships, taxonomy
+from app.services.ai_classifier import DURATION_GROUPS, duration_groups_for
 from app.util import utcnow
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -120,11 +121,20 @@ def decide(payload: ReviewDecideIn, admin: CurrentAdmin, db: DbSession) -> dict:
                 up.group_id = group.id  # primary
                 memberships.add_membership(db, up, group.id)
                 try:
-                    tags = json.loads(s.suggested_tags or "[]")
+                    tags = [str(t) for t in json.loads(s.suggested_tags or "[]")]
                 except json.JSONDecodeError:
                     tags = []
-                if isinstance(tags, list) and tags:
-                    taxonomy.set_up_tags(db, up.mid, [str(t) for t in tags], source="ai")
+                # duration groups materialize as memberships below, not tags
+                content_tags = [t for t in tags if t not in DURATION_GROUPS]
+                if content_tags:
+                    taxonomy.set_up_tags(db, up.mid, content_tags, source="ai")
+                # duration groups ride along as secondary memberships so the
+                # UP is never left in one of them alone
+                if up.group_id is not None:
+                    for duration_name in duration_groups_for(db, up.mid):
+                        duration_group, _ = taxonomy.ensure_group(db, duration_name)
+                        if duration_group is not None:
+                            memberships.add_membership(db, up, duration_group.id)
                 taxonomy.clear_status_labels(db, up.mid, ["待整理", "无法确定"])
                 up.ai_status = "done"
                 applied += 1

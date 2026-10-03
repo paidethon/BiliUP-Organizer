@@ -278,7 +278,7 @@ class ReviewDecideIn(BaseModel):
 class ReviewRunIn(BaseModel):
     batch_size: int = 20
     # one-off requirement from the review page; empty -> ai.grouping_instructions
-    instruction: str = Field(default="", max_length=500)
+    instruction: str = Field(default="", max_length=800)
     # one-off confidence-workflow overrides; None -> values from ai settings
     auto_apply: bool | None = None
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)

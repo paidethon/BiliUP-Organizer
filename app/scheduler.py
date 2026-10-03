@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_settings
 
 log = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
+
+# Followings sync runs once a day at 03:00 in the operator's wall-clock
+# timezone (bilibili is a Chinese service; the self-hosted box is UTC).
+_SCHEDULER_TZ = "Asia/Shanghai"
 
 
 def _job(name: str, fn):  # noqa: ANN001, ANN202
@@ -49,7 +54,6 @@ def start_scheduler() -> BackgroundScheduler | None:
         except (TypeError, ValueError):
             return float(default_hours)
 
-    sync_hours = _interval("sync", "interval_hours", 6)
     reminder_hours = _interval("reminders", "frequency_hours", 24)
 
     def _weekly(db):  # noqa: ANN001
@@ -62,12 +66,10 @@ def start_scheduler() -> BackgroundScheduler | None:
     _scheduler = BackgroundScheduler(timezone="UTC")
     _scheduler.add_job(
         _job("followings_sync", lambda db: sync_service.run_sync_kind(db, "followings")),
-        "interval",
-        hours=sync_hours,
+        CronTrigger(hour=3, minute=0, timezone=_SCHEDULER_TZ),
         id="followings_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
     _scheduler.add_job(
         _job("watch_history_sync", lambda db: sync_service.run_sync_kind(db, "watch_history")),
