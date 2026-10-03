@@ -71,6 +71,10 @@ def start_scheduler() -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    # NOTE: never pass next_run_time=None to add_job — in APScheduler that is
+    # an explicit "never schedule this job", which silently disabled these
+    # syncs in production (the reported "data never updates" bug). Omit the
+    # argument and interval triggers compute their first run themselves.
     _scheduler.add_job(
         _job("watch_history_sync", lambda db: sync_service.run_sync_kind(db, "watch_history")),
         "interval",
@@ -78,7 +82,6 @@ def start_scheduler() -> BackgroundScheduler | None:
         id="watch_history_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
     _scheduler.add_job(
         _job("native_groups_sync", lambda db: sync_service.run_sync_kind(db, "native_incremental")),
@@ -87,7 +90,6 @@ def start_scheduler() -> BackgroundScheduler | None:
         id="native_groups_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
     _scheduler.add_job(
         _job("reminder_scan", run_scan),
