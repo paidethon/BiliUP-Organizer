@@ -154,11 +154,16 @@ def test_backfill_respects_max_ups_priority_and_negative_cache(db: Session) -> N
     login(db)
     # watch counts via author snapshots: 301 x3, 302 x2, 303 x1, 304 x2, 305 x2
     for history_id, mid in [
-        (1, 301), (2, 301), (3, 301),
-        (4, 302), (5, 302),
+        (1, 301),
+        (2, 301),
+        (3, 301),
+        (4, 302),
+        (5, 302),
         (6, 303),
-        (7, 304), (8, 304),
-        (9, 305), (10, 305),
+        (7, 304),
+        (8, 304),
+        (9, 305),
+        (10, 305),
     ]:
         db.add(WatchAuthor(history_id=history_id, author_mid=mid, author_name=None))
     db.add(UpProfile(mid=304, uname=None, attempts=3, last_attempt_at=None))  # too many attempts
