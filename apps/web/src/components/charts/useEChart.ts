@@ -23,7 +23,8 @@ async function loadECharts(): Promise<EChartsModule> {
       import("echarts/core"),
       import("echarts/charts"),
       import("echarts/components"),
-    ]).then(([core, charts, components]) => {
+      import("echarts/renderers"),
+    ]).then(([core, charts, components, renderers]) => {
       core.use([
         charts.BarChart,
         charts.LineChart,
@@ -34,6 +35,9 @@ async function loadECharts(): Promise<EChartsModule> {
         components.DataZoomComponent,
         components.TitleComponent,
         components.MarkLineComponent,
+        // without the renderer registration every init() throws
+        // "painterCtors[rendererType] is not a constructor"
+        renderers.CanvasRenderer,
       ]);
       return core;
     });

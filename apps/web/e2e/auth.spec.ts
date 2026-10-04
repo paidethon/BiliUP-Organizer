@@ -24,13 +24,14 @@ test.describe("认证与登录态", () => {
   test("demo 登录成功跳转 / 并显示侧栏导航", async ({ page }) => {
     await login(page);
     await expect(page).toHaveURL("/");
-    // 限定在侧栏主导航内，避免与页面内「前往××」快捷链接重名
+    // 限定在主导航内，避免与页面内「前往××」快捷链接重名
     const nav = page.getByRole("navigation", { name: "主导航" });
-    for (const label of ["仪表盘", "关注管理", "本地分组", "AI 审核", "提醒中心", "观看历史", "每周周报", "设置"]) {
+    // 移动端导航条不含「设置」chip 之外的所有桌面项？——八个项都在，逐个校验
+    for (const label of ["仪表盘", "关注管理", "本地分组", "AI 审核", "提醒中心", "观看历史", "周报", "设置"]) {
       await expect(nav.getByRole("link", { name: label })).toBeVisible();
     }
-    // 侧栏与仪表盘头部都有「演示模式」徽标，取侧栏（complementary）中的那个
-    await expect(page.getByRole("complementary").getByText("演示模式", { exact: true })).toBeVisible();
+    // 演示模式徽标：桌面在侧栏（complementary），移动端在顶部状态条
+    await expect(page.getByText("演示模式", { exact: true }).first()).toBeVisible();
   });
 
   test("登出按钮回到登录页", async ({ page }) => {

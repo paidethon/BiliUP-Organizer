@@ -94,10 +94,16 @@ jobs:
       # The backend serves the built SPA from apps/web/dist during e2e
       - name: Build frontend
         run: npm run build
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-      - name: Run e2e suite
-        run: npm run e2e
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      # Each project gets its own webServer run: the demo backend database is
+      # per-process, so write-heavy specs must not share state across projects.
+      - name: Run e2e (chromium desktop)
+        run: npx playwright test --project=chromium-desktop
+      - name: Run e2e (webkit desktop)
+        run: npx playwright test --project=webkit-desktop
+      - name: Run e2e (chromium mobile)
+        run: npx playwright test --project=chromium-mobile
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v7

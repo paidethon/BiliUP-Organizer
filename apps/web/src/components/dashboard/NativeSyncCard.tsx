@@ -95,20 +95,10 @@ export function NativeSyncCard() {
         未托管的原生分组与特别关注保持不变。AI 分类与定时同步不会自动执行此操作。
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="subtle"
-          onClick={() => previewMutation.mutate("append")}
-          disabled={busy}
-          aria-label="预览追加同步计划"
-        >
+        <Button variant="subtle" onClick={() => previewMutation.mutate("append")} disabled={busy}>
           {previewMutation.isPending && mode === "append" ? "预览中…" : "预览追加同步（推荐）"}
         </Button>
-        <Button
-          variant="subtle"
-          onClick={() => previewMutation.mutate("replace")}
-          disabled={busy}
-          aria-label="预览替换同步计划"
-        >
+        <Button variant="subtle" onClick={() => previewMutation.mutate("replace")} disabled={busy}>
           预览替换同步
         </Button>
         {plan && plan.mode !== "overwrite" && (
@@ -122,17 +112,11 @@ export function NativeSyncCard() {
                   : "确认按计划追加写入 B 站原生分组？将先自动备份现有分组。";
               if (window.confirm(text)) pushRun.mutate(plan.mode as Mode);
             }}
-            aria-label="确认执行原生分组同步"
           >
             {pushRun.isPending ? "提交中…" : "执行同步（后台任务）"}
           </Button>
         )}
-        <Button
-          variant="ghost"
-          onClick={() => overwritePreview.mutate()}
-          disabled={busy}
-          aria-label="预览托管范围重建"
-        >
+        <Button variant="ghost" onClick={() => overwritePreview.mutate()} disabled={busy}>
           重建托管标签（Dry Run）
         </Button>
         {plan?.mode === "overwrite" && (

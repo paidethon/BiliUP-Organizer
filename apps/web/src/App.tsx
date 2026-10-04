@@ -22,7 +22,7 @@ const NAV = [
   { to: "/reminders", label: "提醒中心" },
   { to: "/reminders-config", label: "提醒配置" },
   { to: "/history", label: "观看历史" },
-  { to: "/weekly-report", label: "每周周报" },
+  { to: "/weekly-report", label: "周报" },
   { to: "/settings", label: "设置" },
 ];
 
@@ -74,7 +74,22 @@ function Shell() {
         </div>
       </aside>
       <main className="flex-1 p-4 md:p-6 max-w-[1200px] mx-auto w-full">
-        <div className="md:hidden mb-4 flex gap-2 overflow-x-auto">
+        <div className="md:hidden mb-3 flex items-center gap-2">
+          {demoMode && (
+            <span className="px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-300">演示模式</span>
+          )}
+          <span className="text-xs text-slate-500">{username}</span>
+          <button
+            className="ml-auto text-xs text-slate-400 underline underline-offset-2"
+            onClick={async () => {
+              await api("/auth/logout", { method: "POST" });
+              navigate("/login");
+            }}
+          >
+            退出登录
+          </button>
+        </div>
+        <nav aria-label="主导航" className="md:hidden mb-4 flex gap-2 overflow-x-auto">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
@@ -91,7 +106,7 @@ function Shell() {
               {item.label}
             </NavLink>
           ))}
-        </div>
+        </nav>
         <Outlet />
       </main>
     </div>

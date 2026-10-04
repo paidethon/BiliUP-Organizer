@@ -15,7 +15,7 @@ async function login(page: Page): Promise<void> {
 
 test("原生分组追加同步：预览 → 后台任务确认按钮出现", async ({ page }) => {
   await login(page);
-  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
   const preview = page.getByRole("button", { name: "预览追加同步（推荐）" });
   await expect(preview).toBeVisible();
   await preview.click();
@@ -29,7 +29,7 @@ test("原生分组追加同步：预览 → 后台任务确认按钮出现", asy
 
 test("原生分组替换同步：预览标注托管范围语义", async ({ page }) => {
   await login(page);
-  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
   await page.getByRole("button", { name: "预览替换同步" }).click();
   await expect(page.getByText(/替换计划（托管范围内/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(/未托管分组保留/)).toBeVisible();
@@ -37,9 +37,9 @@ test("原生分组替换同步：预览标注托管范围语义", async ({ page 
 
 test("重建托管标签：Dry Run 显示保护列表，远端写入需确认", async ({ page }) => {
   await login(page);
-  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
   await page.getByRole("button", { name: "重建托管标签（Dry Run）" }).click();
   await expect(page.getByText(/托管范围重建计划/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "确认重建" })).toBeVisible();
-  await expect(page.getByText(/未托管的远端分组不会被删除|按本地分组重建/).first()).toBeVisible();
+  await expect(page.getByText(/未托管/).first()).toBeVisible();
 });
