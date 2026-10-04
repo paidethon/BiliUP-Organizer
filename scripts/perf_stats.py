@@ -127,8 +127,14 @@ def seed(db) -> None:  # noqa: ANN001
 def verify_indexes() -> None:
     inspector = inspect(get_engine())
     wh = {idx["name"] for idx in inspector.get_indexes("watch_history")}
-    for required in ("ix_watch_history_view_at", "ix_watch_history_up_view", "ix_watch_history_bvid", "uq_watch_history_bvid_viewat"):
-        assert required in wh, f"missing stats index: {required}"
+    required = (
+        "ix_watch_history_view_at",
+        "ix_watch_history_up_view",
+        "ix_watch_history_bvid",
+        "uq_watch_history_bvid_viewat",
+    )
+    for name in required:
+        assert name in wh, f"missing stats index: {name}"
     print("[index] watch_history stats indexes present:", sorted(wh))
 
 
