@@ -48,6 +48,7 @@ _BULK_ACTIONS = {
     "set_group",
     "add_to_group",
     "remove_from_group",
+    "replace_group",
     "clear_group",
     "mark_watched",
     "snooze",
@@ -286,6 +287,18 @@ def bulk_action(payload: BulkIn, admin: CurrentAdmin, db: DbSession) -> BulkOut:
                 up.group_id = group.id  # primary
             if memberships.add_membership(db, up, group.id) or payload.action == "set_group":
                 changed += 1
+    elif payload.action == "replace_group":
+        # explicit REPLACE: clear every membership, then make the target the
+        # sole (primary) group. Distinct from add_to_group (append) so a bulk
+        # edit can never silently wipe the UP's other groups.
+        group = _target_group()
+        if group is None:
+            raise bad_request("params.group_id must reference an existing group")
+        for up in ups:
+            memberships.clear_memberships(db, up)
+            up.group_id = group.id
+            memberships.add_membership(db, up, group.id)
+            changed += 1
     elif payload.action == "remove_from_group":
         group = _target_group()
         if group is None:

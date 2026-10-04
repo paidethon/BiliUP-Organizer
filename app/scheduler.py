@@ -57,13 +57,15 @@ def start_scheduler() -> BackgroundScheduler | None:
     reminder_hours = _interval("reminders", "frequency_hours", 24)
 
     def _weekly(db):  # noqa: ANN001
-        from app.api.weekly_routes import store_report
+        # Last COMPLETE natural week (Mon..Sun, Asia/Shanghai), stored as an
+        # idempotent revision; emailing is best-effort on top of the archive.
+        report = weekly_report.generate_last_complete_week(db)
+        if isinstance(report, dict):  # refused (e.g. future week) — nothing to send
+            log.warning("scheduled weekly report skipped: %s", report.get("message"))
+            return
+        weekly_report.send_report(db, report)
 
-        html = weekly_report.build_report(db)
-        store_report(db, html)
-        weekly_report.send_weekly(db)
-
-    _scheduler = BackgroundScheduler(timezone="UTC")
+    _scheduler = BackgroundScheduler(timezone=_SCHEDULER_TZ)
     _scheduler.add_job(
         _job("followings_sync", lambda db: sync_service.run_sync_kind(db, "followings")),
         CronTrigger(hour=3, minute=0, timezone=_SCHEDULER_TZ),
@@ -113,7 +115,8 @@ def start_scheduler() -> BackgroundScheduler | None:
         day_of_week="mon",
         hour=8,
         minute=0,
-        id="weekly_report",
+        timezone=_SCHEDULER_TZ,  # Monday 08:00 Asia/Shanghai, generating the
+        id="weekly_report",  # last complete week — never host-tz dependent
         max_instances=1,
         coalesce=True,
     )
@@ -122,6 +125,7 @@ def start_scheduler() -> BackgroundScheduler | None:
         "cron",
         hour=3,
         minute=0,
+        timezone="UTC",  # keep the historical 03:00 UTC firing time unchanged
         id="scheduled_backup",
         max_instances=1,
         coalesce=True,

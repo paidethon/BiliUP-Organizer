@@ -26,6 +26,7 @@ UNDOABLE_ACTIONS = {
     "set_group",
     "add_to_group",
     "remove_from_group",
+    "replace_group",
     "clear_group",
     "mark_watched",
     "snooze",
@@ -38,7 +39,7 @@ UNDOABLE_ACTIONS = {
     "clear_status",
 }
 
-_GROUP_ACTIONS = {"set_group", "add_to_group", "remove_from_group", "clear_group"}
+_GROUP_ACTIONS = {"set_group", "add_to_group", "remove_from_group", "replace_group", "clear_group"}
 _TAG_ACTIONS = {"add_tags", "remove_tags"}
 _STATUS_ACTIONS = {"set_status", "clear_status"}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,9 +12,14 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.config import get_settings
 from app.errors import ApiError
+from app.services.bilibili.errors import BiliError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("biliup")
+
+
+def _request_id() -> str:
+    return secrets.token_hex(4)
 
 
 @asynccontextmanager
@@ -79,11 +85,40 @@ def create_app() -> FastAPI:
     async def _api_error(_req: Request, exc: ApiError) -> JSONResponse:
         return exc.to_response()
 
+    @app.exception_handler(BiliError)
+    async def _bili_error(_req: Request, exc: BiliError) -> JSONResponse:
+        """Upstream Bilibili failures are never a 500 "internal error": they
+        get a structured 502/504 with a business code so the UI can explain
+        them (登录失效 ≠ 本应用会话失效) without leaking cookies or paths."""
+        code = f"bili_{exc.kind}"
+        message = {
+            "bili_auth": "B 站登录已失效，请重新登录 B 站账号",
+            "bili_csrf": "B 站 CSRF 校验失败，请更新 B 站 Cookie",
+            "bili_risk_control": "B 站风控/限流已触发，请稍后再试",
+            "bili_http": "B 站接口不可用或响应格式变化",
+            "bili_contract": "B 站返回了意外的数据格式",
+            "bili_param": f"B 站拒绝了该操作：{exc.message}",
+        }.get(code, "B 站请求失败")
+        status = 504 if exc.kind == "timeout" else 502
+        log.warning("bilibili error mapped to %s %s: %s", status, code, exc)
+        return JSONResponse(
+            status_code=status,
+            content={"error": {"code": code, "message": message, "details": {"bili_code": exc.code}}},
+        )
+
     @app.exception_handler(Exception)
     async def _unhandled(_req: Request, exc: Exception) -> JSONResponse:
-        log.exception("unhandled error")
+        request_id = _request_id()
+        log.exception("unhandled error request_id=%s", request_id)
         return JSONResponse(
-            status_code=500, content={"error": {"code": "internal_error", "message": "internal server error"}}
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "internal server error",
+                    "details": {"request_id": request_id},
+                }
+            },
         )
 
     from app.api import (

@@ -14,7 +14,7 @@ _DEFAULT_HISTORY_PAGES = 5
 _DEFAULT_HISTORY_WINDOW = 14  # days; window-based fetch makes day stats complete
 
 
-def run_sync_kind(db: Session, kind: str) -> dict:
+def run_sync_kind(db: Session, kind: str, **kwargs) -> dict:
     """Entry point used by routes and the scheduler.
 
     kind: followings | watch_history | full | native_groups | native_overwrite |
@@ -46,14 +46,21 @@ def run_sync_kind(db: Session, kind: str) -> dict:
     if kind == "native_overwrite":
         from app.services import native_sync
 
-        return native_sync.push_overwrite(db)
+        return native_sync.push_overwrite(db, run=kwargs.get("run"))
     if kind == "native_incremental":
         from app.services import native_sync
         from app.services.settings_store import get_section_raw
 
         if not bool(get_section_raw(db, "sync").get("native_push_enabled")):
             return {"skipped": "native_push_disabled"}
-        return native_sync.push_incremental(db)
+        return native_sync.push_incremental(db, run=kwargs.get("run"))
+    if kind == "native_push":
+        from app.services import native_sync
+        from app.services.settings_store import get_section_raw
+
+        if not bool(get_section_raw(db, "sync").get("native_push_enabled")):
+            return {"skipped": "native_push_disabled"}
+        return native_sync.push(db, mode=str(kwargs.get("mode") or "append"), run=kwargs.get("run"))
     if kind == "native_groups":
         return run_native_groups_sync(db)
     raise ValueError(f"unknown sync kind: {kind}")
@@ -165,13 +172,18 @@ def run_watch_history_sync(db: Session) -> dict:
     - fetch recent history covering the configured window (default 14 days,
       capped by max pages from sync settings)
     - upsert watch_history rows (unique bvid+view_at), storing video duration
+      AND the author name/face snapshot + profile cache entry
     - per up: last_watched_at = latest view_at, watched_count = distinct bvid count
       for followed mids only
-    - return {"fetched": int, "new": int, "ups_touched": int}
+    - bounded nickname backfill for top watched UPs still missing names
+    - return {"fetched": int, "new": int, "ups_touched": int,
+      "history_truncated": bool} — truncated=True means the page cap stopped
+      the fetch with more upstream data; stats surfaces it as partial coverage
     """
     from app.services.bilibili.cookies import load_cookies
     from app.services.bilibili.followings import fetch_history
     from app.services.settings_store import get_section_raw
+    from app.services.up_profiles import backfill_missing_profiles, snapshot_authors
 
     if not load_cookies(db):
         return {"skipped": "not_logged_in"}
@@ -182,7 +194,9 @@ def run_watch_history_sync(db: Session) -> dict:
         _int_or(sync_cfg.get("history_window_days"), _DEFAULT_HISTORY_WINDOW) or _DEFAULT_HISTORY_WINDOW
     )
 
-    entries = _fetch_guarded(db, fetch_history, db, max_pages=max_pages, window_days=window_days)
+    fetch = _fetch_guarded(db, fetch_history, db, max_pages=max_pages, window_days=window_days)
+    entries = fetch["entries"]
+    truncated = bool(fetch.get("truncated"))
 
     ups_by_mid: dict[int, UpUser] = {up.mid: up for up in db.query(UpUser).all()}
 
@@ -211,16 +225,16 @@ def run_watch_history_sync(db: Session) -> dict:
         up_mid = _int_or(entry.get("author_mid"), None)
         row = existing.get((bvid, view_at))
         if row is None:
-            db.add(
-                WatchHistory(
-                    bvid=bvid,
-                    up_mid=up_mid,
-                    title=str(entry.get("title") or ""),
-                    view_at=view_at,
-                    progress=_int_or(entry.get("progress"), 0),
-                    duration_seconds=_int_or(entry.get("duration"), None),
-                )
+            row = WatchHistory(
+                bvid=bvid,
+                up_mid=up_mid,
+                title=str(entry.get("title") or ""),
+                view_at=view_at,
+                progress=_int_or(entry.get("progress"), 0),
+                duration_seconds=_int_or(entry.get("duration"), None),
             )
+            db.add(row)
+            db.flush()  # row.id is needed for the author snapshot
             new += 1
         else:
             if entry.get("title"):
@@ -231,6 +245,13 @@ def run_watch_history_sync(db: Session) -> dict:
             duration = _int_or(entry.get("duration"), None)
             if duration:
                 row.duration_seconds = duration
+        snapshot_authors(
+            db,
+            row.id,
+            up_mid,
+            entry.get("author_name"),
+            entry.get("author_face"),
+        )
         if up_mid is not None and up_mid in ups_by_mid:
             touched.add(up_mid)
 
@@ -242,7 +263,37 @@ def run_watch_history_sync(db: Session) -> dict:
         up.watched_count = len({r.bvid for r in watched})
 
     db.commit()
-    return {"fetched": len(entries), "new": new, "ups_touched": len(touched)}
+
+    backfill = _backfill_guarded(db, backfill_missing_profiles)
+
+    return {
+        "fetched": len(entries),
+        "new": new,
+        "ups_touched": len(touched),
+        "history_truncated": truncated,
+        "profiles_backfilled": backfill.get("looked_up", 0) if isinstance(backfill, dict) else 0,
+    }
+
+
+def _backfill_guarded(db: Session, backfill) -> dict:  # noqa: ANN001
+    """Bounded nickname backfill; auth/risk errors flag the account like any
+    other upstream call but never fail the history sync itself. Disabled in
+    the test environment so the suite never touches the network."""
+    from app.config import get_settings
+    from app.services.bilibili.errors import AuthExpiredError, RiskControlError
+
+    if get_settings().app_env == "test":
+        return {"skipped": "test_env"}
+    try:
+        result = backfill(db)
+        db.commit()
+        return result if isinstance(result, dict) else {}
+    except (AuthExpiredError, RiskControlError):
+        db.rollback()
+        return {"backfill_error": "upstream_unavailable"}
+    except Exception as exc:  # noqa: BLE001 — backfill is best-effort
+        db.rollback()
+        return {"backfill_error": str(exc)[:200]}
 
 
 def run_native_groups_sync(db: Session) -> dict:

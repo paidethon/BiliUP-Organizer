@@ -62,14 +62,16 @@ def fetch_history(
     max_pages: int = 5,
     client: BiliClient | None = None,
     window_days: int | None = None,
-) -> list[dict]:
+) -> dict:
     """Recent watch history, newest first.
 
-    Returns dicts with: bvid, title, author_mid(int|None), view_at(ISO),
-    progress, duration(seconds, 0 when unknown). When window_days is given,
-    pagination stops once entries fall out of that window (whichever of the
-    window edge or max_pages comes first), so day-based stats cover the whole
-    period instead of just the fetched pages.
+    Returns {"entries": [...], "truncated": bool}. Entries carry bvid, title,
+    author_mid/author_name/author_face, view_at(ISO), progress, duration.
+    ``truncated`` is True when pagination stopped at max_pages while the last
+    page was still full — stats callers must surface that as incomplete
+    coverage instead of pretending the window is fully fetched. When
+    window_days is given, pagination also stops once entries fall out of that
+    window (whichever of the window edge or max_pages comes first).
     """
     own = client is None
     c = client or build_client(db)
@@ -79,6 +81,7 @@ def fetch_history(
         if window_days is not None:
             edge = datetime.now(UTC) - timedelta(days=max(1, int(window_days)))
             oldest_allowed = edge.strftime(_TS_FORMAT)
+        truncated = False
         for page in range(1, max(1, max_pages) + 1):
             data = c.get_history(page=page)
             rows = data["list"]
@@ -95,7 +98,9 @@ def fetch_history(
                 entries.append(entry)
             if stop or len(rows) < HISTORY_PAGE_SIZE:
                 break  # short page means we hit the end
-        return entries
+            if page == max(1, max_pages):
+                truncated = True  # page cap reached with more data upstream
+        return {"entries": entries, "truncated": truncated}
     finally:
         if own:
             c.close()
@@ -250,6 +255,10 @@ def _history_row(row: dict) -> dict | None:
         "bvid": bvid,
         "title": str(row.get("title") or ""),
         "author_mid": int(author_mid) if author_mid else None,
+        # upstream author fields (RESEARCH §6.1): previously discarded, which
+        # is why the leaderboard could only fall back to "mid:xxx"
+        "author_name": str(row.get("author_name") or "") or None,
+        "author_face": str(row.get("author_face") or "") or None,
         # view_at is a second-precision epoch upstream (RESEARCH §6.1)
         "view_at": _epoch_ts(row.get("view_at")),
         "progress": int(row.get("progress") or 0),  # -1 means watched to the end
