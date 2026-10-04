@@ -76,7 +76,12 @@ function Shell() {
       <main className="flex-1 p-4 md:p-6 max-w-[1200px] mx-auto w-full">
         <div className="md:hidden mb-3 flex items-center gap-2">
           {demoMode && (
-            <span className="px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-300">演示模式</span>
+            <span
+              data-testid="mobile-demo-badge"
+              className="px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-300"
+            >
+              演示模式
+            </span>
           )}
           <span className="text-xs text-slate-500">{username}</span>
           <button
