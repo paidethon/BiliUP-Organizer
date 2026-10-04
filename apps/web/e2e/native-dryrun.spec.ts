@@ -9,23 +9,37 @@ async function login(page: Page): Promise<void> {
   await expect(page).toHaveURL("/");
 }
 
-// Native-group push is preview-first: the dry run shows the plan (would
-// create/delete/move/skip) and only an explicit confirmation performs the
-// remote write. Remote-side no-write behavior is asserted in backend tests.
+// Native-group sync is preview-first with three explicit levels:
+// append (non-destructive default), replace (managed scope only) and
+// managed-scope rebuild. Every write runs as a tracked background task.
 
-test("原生分组同步支持 Dry Run 预览", async ({ page }) => {
+test("原生分组追加同步：预览 → 后台任务确认按钮出现", async ({ page }) => {
   await login(page);
   await page.goto("/");
-  const preview = page.getByRole("button", { name: "预览原生分组同步计划" });
+  const preview = page.getByRole("button", { name: "预览追加同步（推荐）" });
   await expect(preview).toBeVisible();
   await preview.click();
 
-  // plan panel appears with the preview numbers
-  await expect(page.getByText(/覆盖重建计划|增量计划/)).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(/预计创建分组/)).toBeVisible();
-  await expect(page.getByText(/预计移动成员/)).toBeVisible();
+  await expect(page.getByText(/追加计划（R ∪ D/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "执行同步（后台任务）" })).toBeVisible();
 
-  // execution stays behind an explicit confirm — do not click it here;
-  // the dry run itself must not change anything (no "已按本地分组重建" note)
-  await expect(page.getByText("已按本地分组重建")).toHaveCount(0);
+  // 预览阶段不得出现"成功"文案，也不得自动提交
+  await expect(page.getByText("同步任务已提交")).toHaveCount(0);
+});
+
+test("原生分组替换同步：预览标注托管范围语义", async ({ page }) => {
+  await login(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "预览替换同步" }).click();
+  await expect(page.getByText(/替换计划（托管范围内/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/未托管分组保留/)).toBeVisible();
+});
+
+test("重建托管标签：Dry Run 显示保护列表，远端写入需确认", async ({ page }) => {
+  await login(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "重建托管标签（Dry Run）" }).click();
+  await expect(page.getByText(/托管范围重建计划/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "确认重建" })).toBeVisible();
+  await expect(page.getByText(/未托管的远端分组不会被删除|按本地分组重建/).first()).toBeVisible();
 });

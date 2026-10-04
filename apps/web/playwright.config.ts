@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 /**
  * E2E suite runs against the backend in demo mode (synthetic data, no external
@@ -34,5 +34,10 @@ export default defineConfig({
       DATA_DIR: "../../.e2e-data",
     },
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  // 桌面 1440x900（Chromium + WebKit 覆盖双引擎）+ 移动 390x844 触摸
+  projects: [
+    { name: "chromium-desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
+    { name: "webkit-desktop", use: { ...devices["Desktop Safari"], viewport: { width: 1440, height: 900 } } },
+    { name: "chromium-mobile", use: { ...devices["iPhone 13"], viewport: { width: 390, height: 844 } } },
+  ],
 });

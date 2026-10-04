@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 
 export function Button({
   variant = "primary",
@@ -84,25 +84,67 @@ export function Modal({
   title,
   onClose,
   children,
+  wide = false,
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
+  wide?: boolean;
 }) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const restoreRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    restoreRef.current = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    // focus the panel itself so Tab cycles inside regardless of content
+    panel?.focus();
+    const previouslyFocused = restoreRef.current;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !panel) return;
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previouslyFocused?.focus?.();
+    };
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-4" onClick={onClose}>
       <div
-        className="surface glow w-full max-w-lg max-h-[85vh] overflow-auto"
+        ref={panelRef}
+        tabIndex={-1}
+        className={`surface glow w-full ${wide ? "max-w-6xl" : "max-w-lg"} max-h-[92vh] overflow-auto outline-none`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/60">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/60 sticky top-0 bg-[var(--lumi-surface,#141824)] z-10">
           <h2 className="text-sm font-semibold">{title}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="关闭">
+          <button onClick={onClose} className="text-slate-400 hover:text-white px-2 py-1" aria-label="关闭">
             ✕
           </button>
         </div>

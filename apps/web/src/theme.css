@@ -53,6 +53,19 @@
   --color-indigo-500: #ec4899;
   --color-indigo-600: #db2777;
   --color-indigo-700: #be185d;
+
+  /* chart palette (ECharts reads these at option-build time) */
+  --chart-1: #ec4899;
+  --chart-2: #8b8b98;
+  --chart-3: #34d399;
+  --chart-4: #fbbf24;
+  --chart-5: #60a5fa;
+  --chart-6: #a78bfa;
+  --chart-7: #f87171;
+  --chart-8: #2dd4bf;
+  --chart-axis: #8b8b98;
+  --chart-split: rgba(139, 139, 152, 0.18);
+  --chart-heat-empty: rgba(139, 139, 152, 0.08);
 }
 
 html[data-theme="light"] {
@@ -89,6 +102,19 @@ html[data-theme="light"] {
   --color-indigo-500: #e0448c;
   --color-indigo-600: #c81e6e;
   --color-indigo-700: #a8124e;
+
+  /* chart palette — slightly deepened for white surfaces */
+  --chart-1: #db2777;
+  --chart-2: #6e6878;
+  --chart-3: #0e9f6e;
+  --chart-4: #b45309;
+  --chart-5: #2563eb;
+  --chart-6: #7c3aed;
+  --chart-7: #dc2626;
+  --chart-8: #0d9488;
+  --chart-axis: #6e6878;
+  --chart-split: rgba(110, 104, 120, 0.22);
+  --chart-heat-empty: rgba(110, 104, 120, 0.1);
 }
 
 html, body, #root {

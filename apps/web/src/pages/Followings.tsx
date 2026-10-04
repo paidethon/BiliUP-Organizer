@@ -294,6 +294,7 @@ export default function Followings() {
             if (bulkGroup) runBulk("remove_from_group", { group_id: Number(bulkGroup) });
           }}
           onSetGroup={(gid) => runBulk("set_group", { group_id: gid })}
+          onReplaceGroup={(gid) => runBulk("replace_group", { group_id: gid })}
           onClearGroup={() => runBulk("clear_group")}
           onMarkWatched={() => runBulk("mark_watched")}
           onBlacklist={() => runBulk("blacklist", { value: true })}

@@ -12,6 +12,8 @@ export interface BulkBarProps {
   onAddToGroup: () => void;
   onRemoveFromGroup: () => void;
   onSetGroup: (groupId: number) => void;
+  /** 替换所选分组：清空其他分组后设为目标组（明确区分于追加） */
+  onReplaceGroup: (groupId: number) => void;
   onClearGroup: () => void;
   onMarkWatched: () => void;
   onBlacklist: () => void;
@@ -74,10 +76,22 @@ export function FollowingsBulkBar(props: BulkBarProps) {
           disabled={!props.targetGroup || props.pending}
           onClick={() => {
             const gid = Number(props.targetGroup);
+            if (!Number.isNaN(gid)) props.onReplaceGroup(gid);
+          }}
+          title="清空所选 UP 的其他分组，仅保留该分组"
+        >
+          替换为该组
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={!props.targetGroup || props.pending}
+          onClick={() => {
+            const gid = Number(props.targetGroup);
             if (!Number.isNaN(gid)) props.onSetGroup(gid);
           }}
+          title="设为主分组，保留其他分组关系"
         >
-          仅设为该组
+          设为主分组
         </Button>
       </div>
       <Button variant="subtle" disabled={props.pending} onClick={props.onClearGroup} aria-label="清除所选 UP 的全部分组">
