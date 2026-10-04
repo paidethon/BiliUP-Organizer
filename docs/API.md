@@ -100,15 +100,45 @@ directly when `ai.auto_apply_enabled` is on.
 
 ## Watch history & weekly report
 
+All statistics use Asia/Shanghai wall clock, Monday-first natural weeks with
+half-open ranges, and `metrics_version`-stamped payloads from the shared
+stats service (`app/services/stats.py`). Watch duration is progress-derived
+estimation: `samples = {valid, bound, unknown}` separates usable / lower-
+bound / unusable records; averages divide by valid samples only.
+
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | /history/summary | totals, 30-day daily counts, top watched, backlog |
-| GET | /history?page= | recent history entries |
-| GET | /weekly-report | latest generated report metadata (+ html) |
-| GET | /weekly-report/stats?days= | 1..30 day stats |
-| POST | /weekly-report/preview | returns generated html now |
-| POST | /weekly-report/ai | AI weekly summary |
-| POST | /weekly-report/send | build + email now |
+| GET | /history/summary?start&end&group_id&up_mid | totals, daily counts, top watched (profile-resolved names), coverage |
+| GET | /history?page&q&up_mid&group_id&start&end&hour | filtered history, server-side pagination; `view_at_shanghai` carries an explicit +08:00 offset |
+| GET | /weekly-report | latest stored report (legacy compat) |
+| GET | /weekly-report/week?date= | Shanghai week metadata for the week containing date + stored revisions |
+| GET | /weekly-report/archives | per-week archive summary (latest revision each) |
+| GET | /weekly-report/stats?start&end | live aggregation for a half-open Shanghai range |
+| POST | /weekly-report/generate | `{week_start, save}` → preview or persisted revision (no SMTP/AI needed) |
+| GET | /weekly-report/{id} | one archived revision (frozen snapshot) |
+| POST | /weekly-report/{id}/regenerate | explicit new revision; the old one stays readable |
+| POST | /weekly-report/{id}/send | email THIS revision's stored snapshot |
+| POST | /weekly-report/{id}/ai | optional AI narration of the snapshot (never edits stats) |
+| GET | /weekly-report/{id}/export?format=html\|md\|json | offline-readable download |
+| POST | /weekly-report/preview | legacy rolling preview (current week) |
+| POST | /weekly-report/send | legacy: generate last complete week + email |
+
+## Bilibili native groups (multi-group safe)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | /bilibili/native-groups | cached tag map |
+| POST | /bilibili/native-groups/sync | refresh tag list from upstream |
+| POST | /bilibili/native-groups/push?dry_run= | add members to one tag |
+| POST | /bilibili/native-groups/push-plan | `{mode: append\|replace}` read-only convergence preview (R ∪ D / (R − M) ∪ D) |
+| POST | /bilibili/native-groups/push-run | start tracked background push; progress via /bilibili/sync/runs |
+| POST | /bilibili/native-groups/push-overwrite | `{dry_run}` managed-scope rebuild (backup-first; unmapped remote tags preserved) |
+
+Upstream Bilibili failures map to structured 502 errors
+(`bili_auth` / `bili_csrf` / `bili_risk_control` / `bili_http` / `bili_contract` /
+`bili_param`) instead of opaque 500s. Group writes submit each UP's FULL
+target relation set (addUsers is set-replacement upstream); unmanaged groups
+and 特别关注 are always preserved; every write is read back and verified.
 
 ## Settings (secrets masked; empty secret value on PUT = keep existing)
 
