@@ -1,327 +1,506 @@
-"""HTML weekly report: build with Jinja2, store latest, and email it.
+"""Weekly report service — natural-week archive with revisions.
 
-Thresholds mirror app/services/reminders.py so the report and the reminder
-center always agree on what counts as stale / never watched / important but
-unwatched.
+Week = Monday..Sunday in Asia/Shanghai, half-open
+[Mon 00:00, next Mon 00:00). Every report is a frozen snapshot: stats JSON +
+offline-readable HTML generated from ONE observation cutoff. Page rendering,
+AI interpretation, email and exports all reuse the same snapshot — nothing
+recomputes numbers from "today" for an archived week.
+
+- 预览 (save=False): compute from the range, never persist.
+- 生成并保存: creates an explicit new revision; earlier revisions stay
+  readable. No SMTP/AI dependency whatsoever.
+- 幂等: the scheduler skips generating a revision whose content hash equals
+  the latest one for the same week (manual regenerations always create one).
+- legacy: the old "weekly_report:latest" app_settings row is migrated by
+  m0006 into an is_legacy archive with its original HTML and timestamp; a
+  rolling-7-days snapshot is never restated as an exact natural week.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+import pathlib
+from datetime import UTC, date, datetime, timedelta
 
 from jinja2 import Environment, FileSystemLoader
-from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from app.models import GroupLocal, GroupMember, Reminder, UpUser, Video, WatchHistory
+from app.models import GroupLocal, GroupMember, Reminder, UpUser, WeeklyReport
+from app.services import stats as stats_service
 from app.services.emailer import get_smtp_config, send_email
 from app.services.settings_store import get_section_raw
-from app.util import utcnow
+from app.timeutil import (
+    METRICS_VERSION,
+    TZ_NAME,
+    date_range_utc,
+    format_date,
+    shanghai_iso,
+    shanghai_today,
+    utcnow_naive,
+    week_bounds,
+)
+from app.timeutil import (
+    week_start as monday_of,
+)
 
 log = logging.getLogger(__name__)
 
-TEMPLATE_DIR = str(Path(__file__).resolve().parent.parent / "templates")
+TEMPLATE_DIR = str(pathlib.Path(__file__).resolve().parent.parent / "templates")
 _LIST_LIMIT = 10
-
-# watched seconds: prefer the real duration, fall back to progress (progress
-# -1 means "watched to the end" but carries no length)
-_WATCH_SECONDS = func.coalesce(
-    func.nullif(WatchHistory.duration_seconds, 0),
-    func.nullif(WatchHistory.progress, -1),
-    0,
-)
+_HUMAN_MIN = 60
+_HUMAN_HOUR = 3600
 
 
-def _fmt(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+# --------------------------------------------------------------- generation
 
 
-# UTC+8 wall clock for hour/weekday breakdowns (bilibili audiences are CN-based)
-_CN_HOUR = func.substr(func.datetime(WatchHistory.view_at, "+8 hours"), 12, 2)
-_CN_WEEKDAY = func.strftime("%w", func.datetime(WatchHistory.view_at, "+8 hours"))
-# single-video length buckets, seconds
-_DURATION_BUCKET = case(
-    (WatchHistory.duration_seconds <= 300, "≤5分钟"),
-    (WatchHistory.duration_seconds <= 900, "5-15分钟"),
-    (WatchHistory.duration_seconds <= 1800, "15-30分钟"),
-    (WatchHistory.duration_seconds <= 3600, "30-60分钟"),
-    else_="60分钟以上",
-)
-# watch completion ratio: progress=-1 means finished; bounded by duration
-_COMPLETION_RATIO = case(
-    (WatchHistory.progress == -1, 1.0),
-    (
-        WatchHistory.duration_seconds > 0,
-        func.min(WatchHistory.progress, WatchHistory.duration_seconds) * 1.0 / WatchHistory.duration_seconds,
-    ),
-    else_=None,
-)
-_COMPLETION_BUCKET = case(
-    (_COMPLETION_RATIO < 0.25, "0-25%"),
-    (_COMPLETION_RATIO < 0.5, "25-50%"),
-    (_COMPLETION_RATIO < 0.75, "50-75%"),
-    (_COMPLETION_RATIO < 1.0, "75-99%"),
-    else_="看完",
-)
+def resolve_week(day: date | None = None) -> tuple[date, date, bool]:
+    """(week_start_monday, week_end_exclusive, is_complete) for the week
+    containing ``day`` (Shanghai calendar)."""
+    today = shanghai_today()
+    target = day or today
+    start, end = week_bounds(target)
+    return start, end, end <= today
 
 
-def build_stats(db: Session, days: int = 7) -> dict:
-    """Aggregate watch data for the dashboard/report charts via SQL sums.
+def build_week_snapshot(db: Session, week_start: date, now: datetime | None = None) -> dict:
+    """Compute the full stats payload + reminder lists for one natural week.
+    The snapshot embeds the member sets used (C3) so later group edits can
+    never silently rewrite an archived report."""
+    start, end = week_bounds(week_start)
+    payload = stats_service.range_stats(
+        db,
+        start,
+        end,
+        include_prev=True,
+        extras=True,
+        now=now or datetime.now(UTC),
+    )
+    payload["lists"] = _reminder_lists(db, now or datetime.now(UTC))
+    payload["metrics_note"] = (
+        "观看时长为按记录进度估算（有效进度与对应时长折算），非精确实际播放时长；"
+        "统计范围仅覆盖已同步的观看历史。"
+    )
+    return payload
 
-    Everything the frontend renders comes from here — no row scans in Python.
-    """
-    now = datetime.now(UTC).replace(tzinfo=None)
-    cutoff = _fmt(now - timedelta(days=days))
-    scoped = db.query(WatchHistory).filter(WatchHistory.view_at >= cutoff)
 
-    views = scoped.count()
-    watch_seconds = int(scoped.with_entities(func.coalesce(func.sum(_WATCH_SECONDS), 0)).scalar() or 0)
+def generate_report(
+    db: Session,
+    week_start: date,
+    *,
+    save: bool,
+    actor: str = "system",
+    force_revision: bool = False,
+) -> WeeklyReport | dict:
+    """Render + optionally persist one natural-week report as a new revision.
 
-    daily_rows = (
-        scoped.with_entities(
-            func.substr(WatchHistory.view_at, 1, 10).label("day"),
-            func.count().label("views"),
-            func.coalesce(func.sum(_WATCH_SECONDS), 0).label("seconds"),
+    Future weeks are refused (no fabricated reports). Incomplete weeks are
+    allowed and carry is_complete=False so the UI can label them. Identical
+    content (same fingerprint) does NOT create a duplicate revision — the
+    explicit「重新生成」path passes force_revision=True to publish a new
+    revision even when the numbers did not change."""
+    start, end, _complete = resolve_week(week_start)  # works for any day of the week
+    today = shanghai_today()
+    if start > today:
+        return {"ok": False, "message": "所选周尚未开始，不能生成未来报告"}
+
+    snapshot = build_week_snapshot(db, start)
+    html = render_report_html(db, snapshot, start, end)
+    generated_at = utcnow_naive()
+    content_hash = _content_hash(snapshot, start, end)
+
+    if not save:
+        return WeeklyReport(
+            scope="default",
+            period_start=format_date(start),
+            period_end_exclusive=format_date(end),
+            timezone=TZ_NAME,
+            metrics_version=METRICS_VERSION,
+            revision=1,
+            is_legacy=False,
+            status="archived",
+            generated_at=generated_at,
+            data_cutoff=min(_end_to_utc(end), generated_at),
+            coverage_json=json.dumps(snapshot.get("coverage", {}), ensure_ascii=False),
+            stats_json=json.dumps(snapshot, ensure_ascii=False),
+            html=html,
+            content_hash=content_hash,
         )
-        .group_by("day")
-        .order_by("day")
-        .all()
-    )
-    daily = [
-        {"date": str(day), "views": int(views), "seconds": int(seconds)} for day, views, seconds in daily_rows
-    ]
 
-    group_rows = (
-        scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
-        .join(GroupMember, GroupMember.up_mid == WatchHistory.up_mid, isouter=True)
-        .join(GroupLocal, GroupLocal.id == GroupMember.group_id, isouter=True)
-        .with_entities(
-            func.coalesce(GroupLocal.name, "未分组").label("name"),
-            func.count().label("views"),
-            func.coalesce(func.sum(_WATCH_SECONDS), 0).label("seconds"),
+    latest = _latest_revision(db, start)
+    if latest is not None and latest.content_hash == content_hash and not force_revision:
+        return latest  # idempotent: identical content, no duplicate revision
+
+    report = WeeklyReport(
+        scope="default",
+        period_start=format_date(start),
+        period_end_exclusive=format_date(end),
+        timezone=TZ_NAME,
+        metrics_version=METRICS_VERSION,
+        revision=(latest.revision + 1) if latest else 1,
+        is_legacy=False,
+        status="archived",
+        generated_at=generated_at,
+        data_cutoff=min(_end_to_utc(end), generated_at),
+        coverage_json=json.dumps(snapshot.get("coverage", {}), ensure_ascii=False),
+        stats_json=json.dumps(snapshot, ensure_ascii=False),
+        html=html,
+        content_hash=content_hash,
+    )
+    db.add(report)
+    db.commit()
+    log.info("stored weekly report rev=%s week=%s actor=%s", report.revision, report.period_start, actor)
+    return report
+
+
+def _latest_revision(db: Session, week_start: date) -> WeeklyReport | None:
+    return (
+        db.query(WeeklyReport)
+        .filter(
+            WeeklyReport.scope == "default",
+            WeeklyReport.period_start == format_date(week_start),
         )
-        .group_by("name")
-        .order_by(func.count().desc())
-        .limit(8)
+        .order_by(WeeklyReport.revision.desc())
+        .first()
+    )
+
+
+def _content_hash(snapshot: dict, start: date, end: date) -> str:
+    basis = {
+        "period": [format_date(start), format_date(end)],
+        "metrics_version": snapshot.get("metrics_version"),
+        "views": snapshot.get("views"),
+        "watch_seconds_est": snapshot.get("watch_seconds_est"),
+        "distinct_videos": snapshot.get("distinct_videos"),
+        "distinct_ups": snapshot.get("distinct_ups"),
+        "generated_day": shanghai_today().isoformat(),
+    }
+    return hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def _end_to_utc(end: date) -> str:
+    return date_range_utc(end, end)[0]
+
+
+# ------------------------------------------------------------ auto (scheduler)
+
+
+def generate_last_complete_week(db: Session) -> WeeklyReport | dict:
+    """Scheduled job target: last COMPLETE natural week, idempotent."""
+    today = shanghai_today()
+    last_complete = monday_of(today) - timedelta(days=7)
+    return generate_report(db, last_complete, save=True, actor="scheduler")
+
+
+# ------------------------------------------------------------------ queries
+
+
+def latest_report(db: Session) -> WeeklyReport | None:
+    """Newest non-legacy archived report (for the old GET endpoint)."""
+    return (
+        db.query(WeeklyReport)
+        .filter(WeeklyReport.is_legacy.is_(False))
+        .order_by(WeeklyReport.id.desc())
+        .first()
+    )
+
+
+def legacy_report(db: Session) -> WeeklyReport | None:
+    return db.query(WeeklyReport).filter(WeeklyReport.is_legacy.is_(True)).first()
+
+
+def list_archives(db: Session, limit: int = 104) -> list[dict]:
+    rows = (
+        db.query(WeeklyReport)
+        .order_by(WeeklyReport.period_start.desc().nulls_last(), WeeklyReport.revision.desc())
+        .limit(limit)
         .all()
     )
-    by_group = [
-        {"name": str(name), "views": int(views), "seconds": int(seconds)}
-        for name, views, seconds in group_rows
+    return [
+        {
+            "id": r.id,
+            "scope": r.scope,
+            "period_start": r.period_start,
+            "period_end_exclusive": r.period_end_exclusive,
+            "timezone": r.timezone,
+            "metrics_version": r.metrics_version,
+            "revision": r.revision,
+            "is_legacy": bool(r.is_legacy),
+            "status": r.status,
+            "generated_at": r.generated_at,
+            "generated_at_shanghai": shanghai_iso(r.generated_at),
+            "data_cutoff": r.data_cutoff,
+            "send_status": r.send_status,
+            "sent_at": r.sent_at,
+            "sent_to": r.sent_to,
+            "views": _snapshot_views(r),
+            "content_hash": r.content_hash,
+        }
+        for r in rows
     ]
 
-    up_rows = (
-        scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
-        .with_entities(
-            UpUser.uname.label("uname"),
-            func.count().label("views"),
-            func.coalesce(func.sum(_WATCH_SECONDS), 0).label("seconds"),
+
+def _snapshot_views(report: WeeklyReport) -> int | None:
+    try:
+        return int(json.loads(report.stats_json).get("views"))
+    except (TypeError, ValueError):
+        return None
+
+
+def archive_summary(db: Session) -> dict:
+    """Weeks that already have an archive, keyed by Monday, latest revision."""
+    rows = (
+        db.query(WeeklyReport)
+        .filter(WeeklyReport.is_legacy.is_(False))
+        .order_by(WeeklyReport.period_start.desc(), WeeklyReport.revision.desc())
+        .all()
+    )
+    seen: set[str] = set()
+    items: list[dict] = []
+    for r in rows:
+        if r.period_start in seen:
+            continue
+        seen.add(r.period_start)
+        items.append(
+            {
+                "period_start": r.period_start,
+                "period_end_exclusive": r.period_end_exclusive,
+                "latest_revision": r.revision,
+                "generated_at_shanghai": shanghai_iso(r.generated_at),
+                "status": r.status,
+                "views": _snapshot_views(r),
+            }
         )
-        .group_by(UpUser.mid, "uname")
-        .order_by(func.count().desc())
-        .limit(8)
-        .all()
-    )
-    top_ups = [
-        {"uname": str(uname), "views": int(views), "seconds": int(seconds)}
-        for uname, views, seconds in up_rows
-    ]
+    return {"weeks": items}
 
-    # ---- chart data for the report page (10 additional aggregations) ----
 
-    hourly = [0] * 24
-    for hour, count in scoped.with_entities(_CN_HOUR, func.count()).group_by(_CN_HOUR).all():
-        if hour is not None and str(hour).isdigit():
-            hourly[int(hour)] = int(count)
+# ------------------------------------------------------------------- export
 
-    weekday_names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-    weekday_rows = dict(scoped.with_entities(_CN_WEEKDAY, func.count()).group_by(_CN_WEEKDAY).all())
-    weekday = [
-        {"label": weekday_names[int(index)], "value": int(weekday_rows.get(index, 0))}
-        for index in ["1", "2", "3", "4", "5", "6", "0"]  # 周一..周日
-    ]
 
-    duration_labels = ["≤5分钟", "5-15分钟", "15-30分钟", "30-60分钟", "60分钟以上"]
-    duration_rows = dict(
-        scoped.filter(WatchHistory.duration_seconds > 0)
-        .with_entities(_DURATION_BUCKET, func.count())
-        .group_by(_DURATION_BUCKET)
-        .all()
-    )
-    duration_buckets = [
-        {"label": label, "value": int(duration_rows.get(label, 0))} for label in duration_labels
-    ]
-
-    completion_labels = ["0-25%", "25-50%", "50-75%", "75-99%", "看完"]
-    completion_rows = dict(
-        scoped.filter((WatchHistory.progress == -1) | (WatchHistory.duration_seconds > 0))
-        .with_entities(_COMPLETION_BUCKET, func.count())
-        .group_by(_COMPLETION_BUCKET)
-        .all()
-    )
-    completion_buckets = [
-        {"label": label, "value": int(completion_rows.get(label, 0))} for label in completion_labels
-    ]
-
-    tname_rows = (
-        scoped.join(Video, Video.bvid == WatchHistory.bvid)
-        .filter(Video.tname.isnot(None), Video.tname != "")
-        .with_entities(Video.tname.label("name"), func.count().label("views"))
-        .group_by("name")
-        .order_by(func.count().desc())
-        .limit(8)
-        .all()
-    )
-    tname_top = [{"name": str(name), "views": int(views)} for name, views in tname_rows]
-
-    cutoff_30 = _fmt(now - timedelta(days=30))
-    daily_30_rows = (
-        db.query(WatchHistory)
-        .filter(WatchHistory.view_at >= cutoff_30)
-        .with_entities(
-            func.substr(WatchHistory.view_at, 1, 10).label("day"),
-            func.count().label("views"),
-        )
-        .group_by("day")
-        .order_by("day")
-        .all()
-    )
-    daily_30 = [{"date": str(day), "views": int(views)} for day, views in daily_30_rows]
-    running = 0
-    cumulative = []
-    for point in daily_30:
-        running += point["views"]
-        cumulative.append({**point, "total": running})
-
-    follow_rows = (
-        db.query(func.substr(UpUser.followed_at, 1, 7).label("month"), func.count())
-        .filter(UpUser.followed_at.isnot(None))
-        .group_by("month")
-        .order_by("month")
-        .limit(12)
-        .all()
-    )
-    follow_trend = [{"month": str(month), "count": int(count)} for month, count in follow_rows]
-
-    top5_views = sum(u["views"] for u in top_ups[:5])
-    top5_share = round(top5_views / views, 3) if views else 0.0
-
-    cutoff_never = _fmt(now - timedelta(days=30))
-    recent_follows = (
-        db.query(UpUser).filter(UpUser.followed_at.isnot(None), UpUser.followed_at < cutoff_never).count()
-    )
-    never_watched = (
-        db.query(UpUser)
-        .filter(UpUser.followed_at.isnot(None), UpUser.followed_at < cutoff_never, UpUser.watched_count == 0)
-        .count()
-    )
-    never_watched_ratio = round(never_watched / recent_follows, 3) if recent_follows else 0.0
-
-    group_completion_rows = (
-        scoped.join(UpUser, UpUser.mid == WatchHistory.up_mid)
-        .join(GroupMember, GroupMember.up_mid == WatchHistory.up_mid)
-        .join(GroupLocal, GroupLocal.id == GroupMember.group_id)
-        .filter((WatchHistory.progress == -1) | (WatchHistory.duration_seconds > 0))
-        .with_entities(GroupLocal.name.label("name"), func.avg(_COMPLETION_RATIO).label("avg_ratio"))
-        .group_by("name")
-        .order_by(func.avg(_COMPLETION_RATIO).desc())
-        .limit(8)
-        .all()
-    )
-    group_completion = [
-        {"name": str(name), "ratio": round(float(avg_ratio or 0), 3)}
-        for name, avg_ratio in group_completion_rows
-    ]
-
+def export_json(report: WeeklyReport) -> dict:
     return {
-        "days": days,
-        "generated_at": utcnow(),
-        "total_ups": db.query(UpUser).filter(UpUser.missing.is_(False)).count(),
-        "groups": db.query(GroupLocal).count(),
-        "new_videos": db.query(Video).filter(Video.pubdate.isnot(None), Video.pubdate >= cutoff).count(),
-        "views": views,
-        "watch_seconds": watch_seconds,
-        "avg_video_seconds": int(watch_seconds / views) if views else 0,
-        "daily": daily,
-        "by_group": by_group,
-        "top_ups": top_ups,
-        # chart extensions
-        "hourly": hourly,
-        "weekday": weekday,
-        "duration_buckets": duration_buckets,
-        "completion_buckets": completion_buckets,
-        "tname_top": tname_top,
-        "daily_30": daily_30,
-        "cumulative": cumulative,
-        "follow_trend": follow_trend,
-        "top5_share": top5_share,
-        "never_watched_ratio": never_watched_ratio,
-        "group_completion": group_completion,
+        "report": {
+            "id": report.id,
+            "scope": report.scope,
+            "period_start": report.period_start,
+            "period_end_exclusive": report.period_end_exclusive,
+            "timezone": report.timezone,
+            "metrics_version": report.metrics_version,
+            "revision": report.revision,
+            "is_legacy": bool(report.is_legacy),
+            "generated_at": report.generated_at,
+            "generated_at_shanghai": shanghai_iso(report.generated_at),
+            "data_cutoff": report.data_cutoff,
+            "send_status": report.send_status,
+            "sent_at": report.sent_at,
+        },
+        "stats": _safe_json(report.stats_json),
+        "coverage": _safe_json(report.coverage_json),
     }
 
 
-def _human_duration(seconds: int) -> str:
-    minutes, sec = divmod(max(0, int(seconds)), 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours} 小时 {minutes} 分钟"
-    if minutes:
-        return f"{minutes} 分钟"
-    return f"{sec} 秒"
+def export_markdown(report: WeeklyReport) -> str:
+    """Offline-readable Markdown rendered from the frozen snapshot."""
+    stats = _safe_json(report.stats_json)
+    lines: list[str] = []
+    period = report.period_start or "（旧版滚动区间）"
+    end_label = _inclusive_end_label(report)
+    lines.append(f"# BiliUP Organizer 周报（{period} ~ {end_label}）")
+    lines.append("")
+    generated = shanghai_iso(report.generated_at) or report.generated_at
+    lines.append(f"- 修订: r{report.revision} · 生成: {generated}（Asia/Shanghai）")
+    if report.is_legacy:
+        lines.append("- 说明: 旧版周报（滚动 7 天），区间无法精确还原为自然周")
+    cutoff = stats.get("coverage", {}).get("note")
+    if cutoff:
+        lines.append(f"- 数据覆盖: {cutoff}")
+    lines.append("")
+    samples = stats.get("samples", {})
+    lines.append("## 总览")
+    lines.append("")
+    lines.append(f"- 观看记录数: {stats.get('views', 0)}")
+    seconds = stats.get("watch_seconds_est") or 0
+    lines.append(f"- 估算观看时长: {_human_duration(seconds)}（按记录进度估算）")
+    avg = stats.get("avg_watch_seconds")
+    lines.append(f"- 平均单记录估算时长: {_human_duration(avg) if avg else '无有效样本'}")
+    lines.append(
+        f"- 样本: 有效 {samples.get('valid', 0)} / 下界 {samples.get('bound', 0)}"
+        f" / 未知 {samples.get('unknown', 0)}"
+    )
+    lines.append(f"- 去重视频: {stats.get('distinct_videos', 0)} · 去重 UP: {stats.get('distinct_ups', 0)}")
+    lines.append("")
+    daily = stats.get("daily") or []
+    if daily:
+        lines.append("## 每日观看（周一至周日，Asia/Shanghai）")
+        lines.append("")
+        lines.append("| 日期 | 记录数 |")
+        lines.append("| --- | --- |")
+        for day in daily:
+            value = "—" if day.get("views") is None else str(day["views"])
+            lines.append(f"| {day['date']} | {value} |")
+        lines.append("")
+    by_group = stats.get("by_group") or []
+    if by_group:
+        lines.append("## 分组偏好（非互斥，UP 可属于多个分组）")
+        lines.append("")
+        lines.append("| 分组 | 记录数 | UP 数 |")
+        lines.append("| --- | --- | --- |")
+        for g in by_group:
+            lines.append(f"| {g['name']} | {g['views']} | {g.get('ups', '—')} |")
+        lines.append("")
+    top_ups = stats.get("top_ups") or []
+    if top_ups:
+        lines.append("## TOP UP（按记录数）")
+        lines.append("")
+        for up in top_ups:
+            name = up.get("uname") or "mid:{}".format(up.get("mid"))
+            lines.append("- {}: {} 条".format(name, up.get("views")))
+        lines.append("")
+    lists = stats.get("lists", {})
+    for key, title in (
+        ("stale", "长期未更新"),
+        ("never_watched", "已同步范围内未发现观看记录（非终身判断）"),
+        ("important_unwatched", "重要 UP 有更新未观看"),
+    ):
+        rows = lists.get(key) or []
+        if rows:
+            lines.append(f"## {title}")
+            lines.append("")
+            for up in rows:
+                lines.append(f"- {up.get('uname')}")
+            lines.append("")
+    lines.append("---")
+    lines.append("本文件由快照导出；数字为生成时刻的冻结值。")
+    return "\n".join(lines)
 
 
-def _days_since(ts: str | None, now: datetime) -> int:
-    if not ts:
-        return 0
+def _inclusive_end_label(report: WeeklyReport) -> str:
+    if not report.period_end_exclusive:
+        return "?"
     try:
-        then = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        end = date.fromisoformat(report.period_end_exclusive)
     except ValueError:
-        return 0
-    return max((now - then).days, 0)
+        return report.period_end_exclusive
+    return format_date(end - timedelta(days=1))
 
 
-def _active_ups(db: Session, now_str: str) -> list[UpUser]:
-    """UPs eligible for reminder-style evaluation (skip missing/blacklisted/snoozed)."""
-    result: list[UpUser] = []
+def _safe_json(raw: str | None) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# -------------------------------------------------------------- HTML render
+
+
+def render_report_html(db: Session, snapshot: dict, start: date, end: date) -> str:
+    """Offline-readable HTML (inline CSS, email-safe): static bars + data
+    tables for every section. The interactive web page is the primary
+    surface; this archive keeps the same numbers without JS dependencies."""
+    end_inclusive = end - timedelta(days=1)
+    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
+    period_gen = snapshot.get("period", {})
+    generated_shanghai = shanghai_iso(period_gen.get("generated_at")) or period_gen.get("generated_at", "")
+    avg_seconds = snapshot.get("avg_watch_seconds")
+    return env.get_template("weekly_report.html.j2").render(
+        period=f"{format_date(start)} ~ {format_date(end_inclusive)}",
+        is_complete=period_gen.get("is_complete", True),
+        timezone=TZ_NAME,
+        generated_at=generated_shanghai,
+        total_ups=snapshot.get("total_ups", 0),
+        groups=snapshot.get("groups", 0),
+        new_videos=snapshot.get("new_videos", 0),
+        watched=snapshot.get("views", 0),
+        watch_duration=_human_duration(snapshot.get("watch_seconds_est") or 0),
+        avg_duration=_human_duration(avg_seconds) if avg_seconds else "—",
+        samples=snapshot.get("samples", {}),
+        daily=snapshot.get("daily", []),
+        hourly=snapshot.get("hourly", []),
+        by_group=snapshot.get("by_group", []),
+        by_group_primary=snapshot.get("by_group_primary", []),
+        top_ups=snapshot.get("top_ups", []),
+        heatmap_rows=_heatmap_table_rows(snapshot),
+        group_coverage=snapshot.get("group_coverage", []),
+        video_coverage=snapshot.get("video_coverage", []),
+        explore_return=snapshot.get("explore_return", []),
+        up_delta=snapshot.get("up_delta", {}),
+        duration_buckets=(snapshot.get("duration_buckets") or {}).get("buckets", []),
+        completion_buckets=(snapshot.get("completion_buckets") or {}).get("buckets", []),
+        tname_top=snapshot.get("tname_top", []),
+        tname_coverage=snapshot.get("tname_coverage", {}),
+        coverage_note=(snapshot.get("coverage") or {}).get("note", ""),
+        lists=snapshot.get("lists", {}),
+        metrics_note=snapshot.get("metrics_note", ""),
+        open_reminders=db.query(Reminder).filter(Reminder.status == "open").count(),
+        max_daily=_max_daily(snapshot),
+        fmt_seconds=_human_duration,
+    )
+
+
+def _heatmap_table_rows(snapshot: dict) -> list[dict]:
+    """Flatten C1 for the HTML table: one row per weekday with 24 hour cells."""
+    heatmap = snapshot.get("heatmap") or {}
+    by_weekday: dict[int, list[int]] = {}
+    for day in heatmap.get("days", []):
+        weekday = day.get("weekday")
+        if weekday is None:
+            continue
+        cells = by_weekday.setdefault(int(weekday), [0] * 24)
+        hours = day.get("hours") or []
+        for hour, cell in enumerate(hours[:24]):
+            value = cell.get("views")
+            if value is not None:
+                cells[hour] = cells[hour] + int(value)
+    return [
+        {"weekday": idx, "label": label, "hours": by_weekday.get(idx, [0] * 24)}
+        for idx, label in enumerate(stats_service._WEEKDAY_LABELS)
+    ]
+
+
+def _max_daily(snapshot: dict) -> int:
+    return max((d.get("views") or 0) for d in (snapshot.get("daily") or [])) if snapshot.get("daily") else 0
+
+
+# ------------------------------------------------------------ reminder lists
+
+
+def _reminder_lists(db: Session, now: datetime) -> dict:
+    """Reminder-style lists evaluated at the snapshot's observation cutoff,
+    mirroring app/services/reminders.py thresholds (stale_days /
+    never_watched_days) so the report and the reminder center agree. 重要UP
+    membership is multi-group aware (is_important group via GroupMember)."""
+    prefs = get_section_raw(db, "reminders")
+    stale_days = int(prefs.get("stale_days") or 30)
+    never_days = int(prefs.get("never_watched_days") or 30)
+
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_stale = (now - timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_never = (now - timedelta(days=never_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    important_groups = {g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()}
+    important_mids = (
+        {
+            int(mid)
+            for (mid,) in db.query(GroupMember.up_mid)
+            .filter(GroupMember.group_id.in_(important_groups))
+            .all()
+        }
+        if important_groups
+        else set()
+    )
+
+    stale: list[dict] = []
+    never_watched: list[dict] = []
+    important_unwatched: list[dict] = []
     for up in db.query(UpUser).all():
         if up.missing or up.blacklisted:
             continue
         if up.snoozed_until is not None and up.snoozed_until > now_str:
             continue
-        result.append(up)
-    return result
-
-
-def build_report(db: Session) -> str:
-    """Render app/templates/weekly_report.html.j2 (Jinja2) and return the HTML.
-
-    Context: generated_at, totals (ups, groups, videos/7d, views/7d), up-to-10
-    entries each for stale / never_watched / important_unwatched, and the count
-    of open reminders. Inline CSS only (email-safe), zh-CN copy. Persisting the
-    result via api.weekly_routes.store_report is the caller's job.
-    """
-    prefs = get_section_raw(db, "reminders")
-    stale_days = int(prefs.get("stale_days") or 30)
-    never_days = int(prefs.get("never_watched_days") or 30)
-
-    now = datetime.now(UTC).replace(tzinfo=None)  # naive UTC, matches stored stamps
-    now_str = utcnow()
-    cutoff_stale = _fmt(now - timedelta(days=stale_days))
-    cutoff_never = _fmt(now - timedelta(days=never_days))
-
-    total_ups = db.query(UpUser).count()
-    group_count = db.query(GroupLocal).count()
-    stats = build_stats(db)
-
-    important_groups = {g.id for g in db.query(GroupLocal).filter(GroupLocal.is_important.is_(True)).all()}
-
-    stale: list[dict] = []
-    never_watched: list[dict] = []
-    important_unwatched: list[dict] = []
-    for up in _active_ups(db, now_str):
         if up.last_video_at is None or up.last_video_at < cutoff_stale:
             stale.append(
                 {
@@ -341,8 +520,7 @@ def build_report(db: Session) -> str:
                 }
             )
         if (
-            up.group_id is not None
-            and up.group_id in important_groups
+            up.mid in important_mids
             and up.last_video_at is not None
             and (up.last_watched_at is None or up.last_video_at > up.last_watched_at)
         ):
@@ -355,99 +533,52 @@ def build_report(db: Session) -> str:
                 }
             )
 
-    # oldest known last-video first; UPs that never posted (NULL) go last since
-    # they have no "stopped updating" date and are covered by never_watched
+    # oldest known last-video first; never-posted UPs are covered by
+    # never_watched and would sort arbitrarily otherwise
     stale.sort(key=lambda item: item["last_video_at"] or "9999")
-    never_watched.sort(key=lambda item: item["followed_at"])
+    never_watched.sort(key=lambda item: item["followed_at"] or "")
     important_unwatched.sort(key=lambda item: item["last_video_at"], reverse=True)
-
-    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
-    return env.get_template("weekly_report.html.j2").render(
-        generated_at=now_str,
-        total_ups=total_ups,
-        groups=group_count,
-        new_videos=stats["new_videos"],
-        watched=stats["views"],
-        watch_duration=_human_duration(stats["watch_seconds"]),
-        daily=stats["daily"],
-        by_group=stats["by_group"],
-        top_ups=stats["top_ups"],
-        stale=stale[:_LIST_LIMIT],
-        never_watched=never_watched[:_LIST_LIMIT],
-        important_unwatched=important_unwatched[:_LIST_LIMIT],
-        open_reminders=db.query(Reminder).filter(Reminder.status == "open").count(),
-    )
-
-
-def build_ai_report(db: Session) -> dict:
-    """AI-narrated weekly report with a deterministic machine fallback.
-
-    Sends only the aggregate stats (no titles/PII beyond counts) through the
-    configured OpenAI-compatible endpoint; on any failure returns the template
-    report with fallback=True so the feature degrades instead of breaking.
-    """
-    stats = build_stats(db)
-    try:
-        from app.services.ai_classifier import _ai_config, _chat
-
-        cfg = _ai_config(db)
-    except Exception:  # noqa: BLE001 - unconfigured AI is the normal fallback path
-        return {
-            "ok": True,
-            "fallback": True,
-            "html": build_report(db),
-            "message": "AI 未配置，已生成机器统计版周报",
-        }
-
-    compact = {
-        "days": stats["days"],
-        "views": stats["views"],
-        "watch_minutes": stats["watch_seconds"] // 60,
-        "avg_video_minutes": stats["avg_video_seconds"] // 60,
-        "new_videos": stats["new_videos"],
-        "daily": stats["daily"],
-        "by_group": stats["by_group"],
-        "top_ups": stats["top_ups"],
-        "total_ups": stats["total_ups"],
+    return {
+        "stale": stale[:_LIST_LIMIT],
+        "never_watched": never_watched[:_LIST_LIMIT],
+        "important_unwatched": important_unwatched[:_LIST_LIMIT],
+        "stale_total": len(stale),
+        "never_watched_total": len(never_watched),
+        "important_unwatched_total": len(important_unwatched),
     }
-    system = (
-        "你是B站观看数据分析师。根据JSON统计写一份中文周报分析，"
-        "输出简洁的HTML片段（只用<section><h3><p><ul><li><strong>标签，禁止style/script），"
-        "包含：总体观看习惯、分组偏好、最常看的UP、给用户的2-3条具体建议。"
-    )
+
+
+def _days_since(ts: str | None, now: datetime) -> int:
+    if not ts:
+        return 0
     try:
-        content = _chat(
-            cfg["base_url"], cfg["api_key"], cfg["model"], json.dumps(compact, ensure_ascii=False), system
-        )
-    except Exception as exc:  # noqa: BLE001 - any upstream problem falls back
-        log.warning("ai weekly report failed, using machine report: %s", exc)
-        return {
-            "ok": True,
-            "fallback": True,
-            "html": build_report(db),
-            "message": f"AI 生成失败，已回退机器版：{exc}",
-        }
-
-    html = (
-        "<html><head><meta charset='utf-8'></head>"
-        '<body style="margin:0;padding:16px;background:#f4f5f7;'
-        "font-family:'PingFang SC','Microsoft YaHei',sans-serif;color:#27272a;\">"
-        "<div style='max-width:640px;margin:0 auto;background:#fff;border-radius:10px;padding:20px 24px;'>"
-        f"<p style='color:#71717a;font-size:12px;margin:0 0 12px;'>AI 分析 · 基于近 {stats['days']} 天数据 · "
-        f"观看 {_human_duration(stats['watch_seconds'])}</p>{content}</div></body></html>"
-    )
-    return {"ok": True, "fallback": False, "html": html, "message": "AI 分析已生成"}
+        then = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return 0
+    if now.tzinfo is not None:
+        now = now.astimezone(UTC).replace(tzinfo=None)
+    return max((now - then).days, 0)
 
 
-def send_weekly(db: Session) -> dict:
-    """Build + email the weekly report and store it as the latest one.
+def _human_duration(seconds: int | None) -> str:
+    seconds = max(0, int(seconds or 0))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours} 小时 {minutes} 分钟"
+    if minutes:
+        return f"{minutes} 分钟"
+    return f"{sec} 秒"
 
-    Returns {"ok", "message"}; ok=False when the weekly report is disabled in
-    the reminders settings, when SMTP is not configured, or when sending fails
-    (ApiError is swallowed into a result so scheduler/API callers always get a
-    plain dict). On success the HTML is stored via
-    app.api.weekly_routes.store_report under key "weekly_report:latest".
-    """
+
+# --------------------------------------------------------------------- send
+
+
+def send_report(db: Session, report: WeeklyReport) -> dict:
+    """Email the stored snapshot of THIS revision. Failures keep the archive
+    untouched (send_status=failed) and never recompute another report."""
+    if report.is_legacy:
+        return {"ok": False, "message": "旧版周报缺少结构化快照，请先重新生成再发送"}
     prefs = get_section_raw(db, "reminders")
     if not prefs.get("weekly_report_enabled", True):
         return {"ok": False, "message": "周报发送已在设置中关闭"}
@@ -456,14 +587,73 @@ def send_weekly(db: Session) -> dict:
     if not str(cfg.get("host") or "").strip() or not str(cfg.get("to_addr") or "").strip():
         return {"ok": False, "message": "SMTP 未配置，无法发送周报"}
 
-    from app.api.weekly_routes import store_report
-
-    html = build_report(db)
-    subject = f"[BiliUP Organizer] 周报 {utcnow()[:10]}"
+    start_label = report.period_start or ""
+    end_label = _inclusive_end_label(report)
+    subject = f"[BiliUP Organizer] 周报 {start_label}~{end_label} r{report.revision}"
     try:
-        send_email(db, subject, html)
-    except Exception as exc:  # noqa: BLE001 - report the failure, never crash the job
+        send_email(db, subject, report.html)
+    except Exception as exc:  # noqa: BLE001 — report the failure, keep the archive
         message = getattr(exc, "message", None) or str(exc)
+        report.send_status = "failed"
+        db.commit()
         return {"ok": False, "message": f"周报发送失败：{message}"}
-    store_report(db, html)
-    return {"ok": True, "message": "周报已生成并发送", "generated_at": utcnow()}
+    report.send_status = "sent"
+    report.sent_at = utcnow_naive()
+    report.sent_to = str(cfg.get("to_addr"))
+    report.status = "sent"
+    db.commit()
+    return {
+        "ok": True,
+        "message": f"周报 r{report.revision} 已发送",
+        "sent_to": report.sent_to,
+        "sent_at": report.sent_at,
+    }
+
+
+def send_weekly(db: Session) -> dict:
+    """Legacy entry point: generate last complete week + send it."""
+    report = generate_last_complete_week(db)
+    if isinstance(report, dict):
+        return {"ok": False, "message": report.get("message", "周报生成失败")}
+    return send_report(db, report)
+
+
+# ---------------------------------------------------------------------- AI
+
+
+def build_ai_text(db: Session, report: WeeklyReport) -> dict:
+    """Optional AI interpretation of a stored snapshot. The AI only narrates;
+    it never receives or rewrites the numbers. Failure keeps the machine
+    snapshot intact."""
+    stats = _safe_json(report.stats_json)
+    compact = {
+        "period": [report.period_start, report.period_end_exclusive],
+        "views": stats.get("views"),
+        "watch_minutes": (stats.get("watch_seconds_est") or 0) // 60,
+        "daily": stats.get("daily"),
+        "by_group": stats.get("by_group"),
+        "top_ups": stats.get("top_ups"),
+    }
+    try:
+        from app.services.ai_classifier import _ai_config, _chat
+
+        cfg = _ai_config(db)
+    except Exception:  # noqa: BLE001 — unconfigured AI is the normal fallback path
+        return {"ok": False, "message": "AI 未配置，机器统计快照不受影响"}
+    system = (
+        "你是B站观看数据分析师。根据JSON统计写一段中文解读（100-200字），"
+        "只能引用给出的数字，不得编造或修改数据。"
+    )
+    try:
+        content = _chat(
+            cfg["base_url"],
+            cfg["api_key"],
+            cfg["model"],
+            json.dumps(compact, ensure_ascii=False),
+            system,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"AI 解读失败：{exc}"}
+    report.ai_text = content
+    db.commit()
+    return {"ok": True, "ai_text": content}

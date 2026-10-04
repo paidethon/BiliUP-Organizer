@@ -14,7 +14,10 @@
           <tr>
             <td style="background:#18181b;padding:24px 32px;">
               <h1 style="margin:0;font-size:20px;color:#ffffff;">BiliUP Organizer 周报</h1>
-              <p style="margin:6px 0 0;font-size:12px;color:#a1a1aa;">生成时间：{{ generated_at }}（UTC）</p>
+              <p style="margin:6px 0 0;font-size:12px;color:#a1a1aa;">
+                统计区间：{{ period }}（{{ timezone }}，周一起始{% if not is_complete %}，本周尚未结束{% endif %}）
+              </p>
+              <p style="margin:4px 0 0;font-size:12px;color:#a1a1aa;">生成时间：{{ generated_at }}</p>
             </td>
           </tr>
           <tr>
@@ -23,64 +26,173 @@
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
-                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ total_ups }}</div>
-                    <div style="font-size:12px;color:#71717a;margin-top:4px;">关注 UP 总数</div>
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ watched }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">观看记录数</div>
                   </td>
                   <td width="4%"></td>
                   <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
-                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ groups }}</div>
-                    <div style="font-size:12px;color:#71717a;margin-top:4px;">分组数</div>
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ watch_duration }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">估算观看时长</div>
                   </td>
                   <td width="4%"></td>
                   <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
                     <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ new_videos }}</div>
-                    <div style="font-size:12px;color:#71717a;margin-top:4px;">近7天新增视频</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">区间新增视频</div>
                   </td>
                   <td width="4%"></td>
                   <td width="25%" align="center" style="background:#f4f5f7;border-radius:8px;padding:14px 6px;">
-                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ watched }}</div>
-                    <div style="font-size:12px;color:#71717a;margin-top:4px;">近7天观看次数</div>
+                    <div style="font-size:22px;font-weight:700;color:#6366f1;">{{ total_ups }}</div>
+                    <div style="font-size:12px;color:#71717a;margin-top:4px;">关注 UP 总数</div>
                   </td>
                 </tr>
               </table>
+              <p style="margin:10px 0 0;font-size:12px;color:#71717a;">
+                有效样本 {{ samples.valid | default(0) }} · 下界样本 {{ samples.bound | default(0) }} · 未知 {{ samples.unknown | default(0) }}；
+                平均单记录估算时长 {{ avg_duration }}。
+              </p>
+              {% if coverage_note %}<p style="margin:4px 0 0;font-size:12px;color:#a16207;">{{ coverage_note }}</p>{% endif %}
+              <p style="margin:4px 0 0;font-size:12px;color:#a1a1aa;">{{ metrics_note }}</p>
             </td>
           </tr>
           <tr>
             <td style="padding:20px 32px 0;">
-              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #e0338a;padding-left:10px;">本周观看分析</h2>
-              <p style="margin:0 0 10px;font-size:13px;color:#52525b;">
-                近 {{ watched }} 次观看，累计 <strong style="color:#e0338a;">{{ watch_duration }}</strong>。
-              </p>
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #e0338a;padding-left:10px;">每日观看（{{ timezone }}，周一至周日）</h2>
               {% if daily %}
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
                 {% for day in daily %}
                 <tr>
                   <td width="64" style="padding:3px 6px 3px 0;">{{ day.date[5:] }}</td>
                   <td>
-                    <div style="background:#fce7f3;border-radius:4px;min-width:4px;width:{{ (day.views * 6) if day.views < 15 else 90 }}%;height:12px;">
-                      <div style="background:#e0338a;border-radius:4px;height:12px;width:{{ (day.views * 6) if day.views < 15 else 100 }}%;">&nbsp;</div>
-                    </div>
+                    {% if day.views is none %}
+                      <span style="color:#a1a1aa;">未到观测时间</span>
+                    {% else %}
+                      <div style="background:#fce7f3;border-radius:4px;min-width:4px;width:{{ (day.views * 100 / max_daily) | round(0, 'floor') | int if max_daily else 0 }}%;height:12px;">
+                        <div style="background:#e0338a;border-radius:4px;height:12px;width:100%;">&nbsp;</div>
+                      </div>
+                    {% endif %}
                   </td>
-                  <td width="36" align="right" style="padding-left:6px;">{{ day.views }} 次</td>
+                  <td width="48" align="right" style="padding-left:6px;">{% if day.views is not none %}{{ day.views }} 次{% endif %}</td>
                 </tr>
                 {% endfor %}
               </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">本区间内已同步数据中没有观看记录。</p>
               {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #0ea5e9;padding-left:10px;">时段与热力（小时 × 星期）</h2>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:10px;color:#71717a;border-collapse:collapse;">
+                <tr style="color:#a1a1aa;">
+                  <td style="padding:2px;">星期\时</td>
+                  {% for h in range(24) %}<td align="center" style="padding:2px;">{{ '%02d'|format(h) }}</td>{% endfor %}
+                </tr>
+                {% for row in heatmap_rows %}
+                <tr>
+                  <td style="padding:2px;white-space:nowrap;">{{ row.label }}</td>
+                  {% for cell in row.hours %}
+                  <td align="center" style="padding:2px;{% if cell %}background:#fce7f3;color:#831843;{% endif %}">{% if cell %}{{ cell }}{% else %}·{% endif %}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #6366f1;padding-left:10px;">分组偏好</h2>
+              <p style="margin:0 0 6px;font-size:12px;color:#a1a1aa;">分组非互斥：同一 UP 可属于多个分组，各组独立计数，比例不可相加。</p>
               {% if by_group %}
-              <p style="margin:12px 0 4px;font-size:13px;color:#18181b;font-weight:600;">分组偏好</p>
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                <tr style="color:#a1a1aa;"><td align="left" style="padding:3px 6px;">分组</td><td align="right" style="padding:3px 6px;">记录</td><td align="right" style="padding:3px 6px;">UP 数</td><td align="right" style="padding:3px 6px;">估算时长</td></tr>
                 {% for g in by_group %}
                 <tr>
-                  <td width="110" style="padding:2px 6px 2px 0;">{{ g.name }}</td>
-                  <td>{{ g.views }} 次{% if g.seconds %} · {{ (g.seconds / 60) | round(0, 'floor') | int }} 分钟{% endif %}</td>
+                  <td align="left" style="padding:3px 6px;">{{ g.name }}</td>
+                  <td align="right" style="padding:3px 6px;">{{ g.views }}</td>
+                  <td align="right" style="padding:3px 6px;">{{ g.ups }}</td>
+                  <td align="right" style="padding:3px 6px;">{% if g.seconds %}{{ fmt_seconds(g.seconds) }}{% else %}—{% endif %}</td>
                 </tr>
                 {% endfor %}
               </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">暂无分组数据。</p>
               {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #10b981;padding-left:10px;">TOP UP 与两周对比</h2>
               {% if top_ups %}
-              <p style="margin:12px 0 4px;font-size:13px;color:#18181b;font-weight:600;">最常看的 UP</p>
-              <p style="margin:0;font-size:12px;color:#71717a;">
-                {% for up in top_ups %}{{ up.uname }}（{{ up.views }}）{% if not loop.last %}、{% endif %}{% endfor %}
+              <p style="margin:0 0 6px;font-size:13px;color:#18181b;font-weight:600;">最常看的 UP</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                {% for up in top_ups %}
+                <tr><td align="left" style="padding:3px 6px;">{{ up.uname or '昵称暂不可用' }}{% if not up.uname %}（UID {{ up.mid }}）{% endif %}</td><td align="right" style="padding:3px 6px;">{{ up.views }} 条</td></tr>
+                {% endfor %}
+              </table>
+              {% endif %}
+              {% if up_delta and (up_delta.risers or up_delta.fallers) %}
+              <p style="margin:12px 0 6px;font-size:13px;color:#18181b;font-weight:600;">UP 观看变化（对比上一自然周，按 mid 聚合）</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                <tr style="color:#a1a1aa;"><td align="left" style="padding:3px 6px;">UP</td><td align="right" style="padding:3px 6px;">本周</td><td align="right" style="padding:3px 6px;">上周</td><td align="right" style="padding:3px 6px;">变化</td></tr>
+                {% for up in up_delta.risers[:5] %}
+                <tr><td align="left" style="padding:3px 6px;">{{ up.uname or '昵称暂不可用' }}</td><td align="right" style="padding:3px 6px;">{{ up.current }}</td><td align="right" style="padding:3px 6px;">{% if up.previous %}{{ up.previous }}{% else %}—{% endif %}</td><td align="right" style="padding:3px 6px;color:#10b981;">+{{ up.delta }}{% if up.change == 'new' %}（新增）{% endif %}</td></tr>
+                {% endfor %}
+                {% for up in up_delta.fallers[:5] %}
+                <tr><td align="left" style="padding:3px 6px;">{{ up.uname or '昵称暂不可用' }}</td><td align="right" style="padding:3px 6px;">{{ up.current }}</td><td align="right" style="padding:3px 6px;">{{ up.previous }}</td><td align="right" style="padding:3px 6px;color:#ef4444;">{{ up.delta }}</td></tr>
+                {% endfor %}
+              </table>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #8b5cf6;padding-left:10px;">分组观看覆盖与已同步投稿覆盖</h2>
+              {% if group_coverage %}
+              <p style="margin:0 0 6px;font-size:12px;color:#a1a1aa;">覆盖 = 区间内有观看记录的关注 UP / 该组纳入统计的关注 UP（各组独立计算）。本报告冻结生成时刻的成员集合。</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                <tr style="color:#a1a1aa;"><td align="left" style="padding:3px 6px;">分组</td><td align="right" style="padding:3px 6px;">覆盖</td><td align="right" style="padding:3px 6px;">比例</td><td align="right" style="padding:3px 6px;">已同步投稿覆盖</td></tr>
+                {% for g in group_coverage %}
+                {% set vc = [] %}
+                {% for v in video_coverage if v.group_id == g.group_id %}{% if vc.append(v) %}{% endif %}{% endfor %}
+                <tr>
+                  <td align="left" style="padding:3px 6px;">{{ g.name }}</td>
+                  <td align="right" style="padding:3px 6px;">{{ g.covered }}/{{ g.total }}</td>
+                  <td align="right" style="padding:3px 6px;">{{ (g.ratio * 100) | round(0) | int }}%</td>
+                  <td align="right" style="padding:3px 6px;">{% if vc %}{{ vc[0].watched_videos }}/{{ vc[0].synced_videos }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% else %}
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">暂无分组覆盖数据。</p>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #f59e0b;padding-left:10px;">内容与完成情况</h2>
+              {% if tname_top %}
+              <p style="margin:0 0 4px;font-size:13px;color:#18181b;font-weight:600;">内容分区 TOP</p>
+              <p style="margin:0 0 6px;font-size:12px;color:#a1a1aa;">已匹配 {{ tname_coverage.matched | default(0) }}/{{ tname_coverage.total | default(0) }} 条（其余缺少视频元数据，未计入）。</p>
+              <p style="margin:0 0 6px;font-size:12px;color:#52525b;">
+                {% for t in tname_top %}{{ t.name }}（{{ t.views }}）{% if not loop.last %}、{% endif %}{% endfor %}
+              </p>
+              {% endif %}
+              {% if duration_buckets or completion_buckets %}
+              <p style="margin:10px 0 4px;font-size:13px;color:#18181b;font-weight:600;">视频时长 / 观看完成率分布</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:12px;color:#71717a;">
+                <tr>
+                  {% for b in duration_buckets %}<td align="center" style="padding:3px;">{{ b.label }}: {{ b.value }}</td>{% endfor %}
+                </tr>
+                <tr>
+                  {% for b in completion_buckets %}<td align="center" style="padding:3px;">{{ b.label }}: {{ b.value }}</td>{% endfor %}
+                </tr>
+              </table>
+              {% endif %}
+              {% if explore_return %}
+              <p style="margin:12px 0 4px;font-size:13px;color:#18181b;font-weight:600;">新探索与回访（按本地已保存历史，非终身首次）</p>
+              <p style="margin:0 0 6px;font-size:12px;color:#52525b;">
+                {% for d in explore_return %}{% if d.new_ups is not none %}{{ d.date[5:] }}: 新 {{ d.new_ups }} / 回访 {{ d.returning_ups }}{% if not loop.last %}；{% endif %}{% endif %}{% endfor %}
               </p>
               {% endif %}
             </td>
@@ -88,14 +200,14 @@
           <tr>
             <td style="padding:20px 32px 0;">
               <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #f59e0b;padding-left:10px;">长期未更新</h2>
-              {% if stale %}
+              {% if lists.stale %}
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
                 <tr style="color:#71717a;">
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">最近投稿</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">距今天数</td>
                 </tr>
-                {% for up in stale %}
+                {% for up in lists.stale %}
                 <tr>
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.last_video_at or '无投稿记录' }}</td>
@@ -110,15 +222,16 @@
           </tr>
           <tr>
             <td style="padding:20px 32px 0;">
-              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #ef4444;padding-left:10px;">从未观看</h2>
-              {% if never_watched %}
+              <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #ef4444;padding-left:10px;">已同步范围内未发现观看记录</h2>
+              <p style="margin:0 0 6px;font-size:12px;color:#a1a1aa;">仅指已同步历史中未发现观看记录，不代表从未观看过。</p>
+              {% if lists.never_watched %}
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
                 <tr style="color:#71717a;">
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">关注时间</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">已关注天数</td>
                 </tr>
-                {% for up in never_watched %}
+                {% for up in lists.never_watched %}
                 <tr>
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.followed_at }}</td>
@@ -127,21 +240,21 @@
                 {% endfor %}
               </table>
               {% else %}
-              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">没有关注后从未观看的 UP，很棒。</p>
+              <p style="margin:0 0 8px;font-size:13px;color:#71717a;">没有符合条件的 UP。</p>
               {% endif %}
             </td>
           </tr>
           <tr>
             <td style="padding:20px 32px 0;">
               <h2 style="margin:0 0 10px;font-size:16px;color:#18181b;border-left:4px solid #6366f1;padding-left:10px;">重要UP未观看</h2>
-              {% if important_unwatched %}
+              {% if lists.important_unwatched %}
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:13px;">
                 <tr style="color:#71717a;">
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">UP</td>
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">最新视频</td>
                   <td align="right" style="padding:6px 8px;border-bottom:1px solid #e4e4e7;">发布时间</td>
                 </tr>
-                {% for up in important_unwatched %}
+                {% for up in lists.important_unwatched %}
                 <tr>
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.uname }}</td>
                   <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f5;">{{ up.title }}</td>
@@ -165,7 +278,7 @@
           <tr>
             <td style="background:#fafafa;padding:14px 32px;border-top:1px solid #e4e4e7;">
               <p style="margin:0;font-size:11px;color:#a1a1aa;">
-                本邮件由 BiliUP Organizer 自动发送，可在「设置 → 提醒」中关闭周报。
+                本邮件/存档由 BiliUP Organizer 快照生成（静态数据表，交互图表请登录网页版）；可在「设置 → 提醒」中关闭周报。
               </p>
             </td>
           </tr>
