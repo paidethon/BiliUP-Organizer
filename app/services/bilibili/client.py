@@ -7,7 +7,14 @@ from typing import Any
 
 import httpx
 
-from app.services.bilibili.errors import AuthExpiredError, BiliError, RiskControlError
+from app.services.bilibili.errors import (
+    AuthExpiredError,
+    BiliError,
+    CsrfError,
+    RiskControlError,
+    UpstreamHttpError,
+    UpstreamParamError,
+)
 from app.services.bilibili.wbi import WbiKeyCache, parse_nav_keys, sign_params
 
 API_BASE = "https://api.bilibili.com"
@@ -109,6 +116,10 @@ class BiliClient:
                 continue
             if code == -101:
                 raise AuthExpiredError(message)
+            if code == -111:
+                raise CsrfError(message)
+            if 22100 <= code < 22200:
+                raise UpstreamParamError(code, message)
             raise BiliError(code, message)
 
     def _fetch(
@@ -274,13 +285,15 @@ class BiliClient:
 
 def _parse_body(response: httpx.Response) -> dict[str, Any]:
     if response.status_code != 200:
-        raise BiliError(-1, f"http {response.status_code}")
+        # 404/5xx/redirects: endpoint path or transport changed — typed so
+        # route handlers can answer 502 with a real cause, never a raw 500.
+        raise UpstreamHttpError(response.status_code)
     try:
         body = response.json()
     except ValueError:
-        raise BiliError(-1, "response is not valid JSON") from None
+        raise UpstreamHttpError(response.status_code, "response is not valid JSON") from None
     if not isinstance(body, dict):
-        raise BiliError(-1, "response JSON is not an object")
+        raise UpstreamHttpError(response.status_code, "response JSON is not an object")
     return body
 
 

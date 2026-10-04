@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_settings
 
 log = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
+
+# Followings sync runs once a day at 03:00 in the operator's wall-clock
+# timezone (bilibili is a Chinese service; the self-hosted box is UTC).
+_SCHEDULER_TZ = "Asia/Shanghai"
 
 
 def _job(name: str, fn):  # noqa: ANN001, ANN202
@@ -49,26 +54,29 @@ def start_scheduler() -> BackgroundScheduler | None:
         except (TypeError, ValueError):
             return float(default_hours)
 
-    sync_hours = _interval("sync", "interval_hours", 6)
     reminder_hours = _interval("reminders", "frequency_hours", 24)
 
     def _weekly(db):  # noqa: ANN001
-        from app.api.weekly_routes import store_report
+        # Last COMPLETE natural week (Mon..Sun, Asia/Shanghai), stored as an
+        # idempotent revision; emailing is best-effort on top of the archive.
+        report = weekly_report.generate_last_complete_week(db)
+        if isinstance(report, dict):  # refused (e.g. future week) — nothing to send
+            log.warning("scheduled weekly report skipped: %s", report.get("message"))
+            return
+        weekly_report.send_report(db, report)
 
-        html = weekly_report.build_report(db)
-        store_report(db, html)
-        weekly_report.send_weekly(db)
-
-    _scheduler = BackgroundScheduler(timezone="UTC")
+    _scheduler = BackgroundScheduler(timezone=_SCHEDULER_TZ)
     _scheduler.add_job(
         _job("followings_sync", lambda db: sync_service.run_sync_kind(db, "followings")),
-        "interval",
-        hours=sync_hours,
+        CronTrigger(hour=3, minute=0, timezone=_SCHEDULER_TZ),
         id="followings_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
+    # NOTE: never pass next_run_time=None to add_job — in APScheduler that is
+    # an explicit "never schedule this job", which silently disabled these
+    # syncs in production (the reported "data never updates" bug). Omit the
+    # argument and interval triggers compute their first run themselves.
     _scheduler.add_job(
         _job("watch_history_sync", lambda db: sync_service.run_sync_kind(db, "watch_history")),
         "interval",
@@ -76,7 +84,6 @@ def start_scheduler() -> BackgroundScheduler | None:
         id="watch_history_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
     _scheduler.add_job(
         _job("native_groups_sync", lambda db: sync_service.run_sync_kind(db, "native_incremental")),
@@ -85,7 +92,6 @@ def start_scheduler() -> BackgroundScheduler | None:
         id="native_groups_sync",
         max_instances=1,
         coalesce=True,
-        next_run_time=None,
     )
     _scheduler.add_job(
         _job("reminder_scan", run_scan),
@@ -109,7 +115,8 @@ def start_scheduler() -> BackgroundScheduler | None:
         day_of_week="mon",
         hour=8,
         minute=0,
-        id="weekly_report",
+        timezone=_SCHEDULER_TZ,  # Monday 08:00 Asia/Shanghai, generating the
+        id="weekly_report",  # last complete week — never host-tz dependent
         max_instances=1,
         coalesce=True,
     )
@@ -118,6 +125,7 @@ def start_scheduler() -> BackgroundScheduler | None:
         "cron",
         hour=3,
         minute=0,
+        timezone="UTC",  # keep the historical 03:00 UTC firing time unchanged
         id="scheduled_backup",
         max_instances=1,
         coalesce=True,

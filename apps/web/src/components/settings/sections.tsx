@@ -17,6 +17,10 @@ export interface AiSectionValue {
   enabled: boolean;
   configured?: boolean;
   grouping_instructions?: string;
+  auto_apply_enabled?: boolean;
+  auto_apply_threshold?: number;
+  review_threshold?: number;
+  allow_new_categories?: boolean;
 }
 
 export interface SmtpSectionValue {
@@ -58,6 +62,7 @@ export interface SyncSectionValue {
   history_enabled: boolean;
   history_max_pages: number;
   history_window_days?: number;
+  native_push_enabled?: boolean;
 }
 
 export interface SettingsData {
@@ -127,6 +132,10 @@ export function AiSectionForm({ value, saving, saved, error, onSave }: SectionFo
     model: value.model,
     enabled: value.enabled,
     grouping_instructions: value.grouping_instructions ?? "",
+    auto_apply_enabled: value.auto_apply_enabled ?? false,
+    auto_apply_threshold: String(value.auto_apply_threshold ?? 0.9),
+    review_threshold: String(value.review_threshold ?? 0.65),
+    allow_new_categories: value.allow_new_categories ?? false,
   });
   useEffect(() => {
     setDraft({
@@ -135,6 +144,10 @@ export function AiSectionForm({ value, saving, saved, error, onSave }: SectionFo
       model: value.model,
       enabled: value.enabled,
       grouping_instructions: value.grouping_instructions ?? "",
+      auto_apply_enabled: value.auto_apply_enabled ?? false,
+      auto_apply_threshold: String(value.auto_apply_threshold ?? 0.9),
+      review_threshold: String(value.review_threshold ?? 0.65),
+      allow_new_categories: value.allow_new_categories ?? false,
     });
   }, [value]);
 
@@ -168,18 +181,66 @@ export function AiSectionForm({ value, saving, saved, error, onSave }: SectionFo
         </div>
       </div>
       <label className="block text-xs text-slate-400">
-        分组指引（长期要求，随每次分类附加到提示词末尾）
+        分类指引（长期要求，随每次分类附加到提示词末尾）
         <textarea
           value={draft.grouping_instructions}
           onChange={(e) => setDraft((d) => ({ ...d, grouping_instructions: e.target.value }))}
           rows={3}
           maxLength={500}
-          placeholder="例如：分组尽可能详细，优先使用已有分组；B 站关注分组上限 20 个"
+          placeholder="例如：优先使用已有分类；分类依据最近投稿内容，近期主题权重更高"
           className="mt-1 w-full bg-slate-900/70 border border-slate-700 rounded-[var(--lumi-radius-sm)] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400 resize-y"
         />
       </label>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-800/60 pt-3">
+        <div className="space-y-2">
+          <ToggleField
+            label="自动应用高置信度结果"
+            checked={draft.auto_apply_enabled}
+            onChange={(v) => setDraft((d) => ({ ...d, auto_apply_enabled: v }))}
+            hint="全量分类时置信度 ≥ 阈值的结果直接生效，无需人工审核"
+          />
+          <ToggleField
+            label="允许 AI 创建新分类"
+            checked={draft.allow_new_categories}
+            onChange={(v) => setDraft((d) => ({ ...d, allow_new_categories: v }))}
+            hint="关闭时 AI 只能使用已有分类（含别名），未知名进入人工审核"
+          />
+        </div>
+        <div className="space-y-2">
+          <NumberField
+            label="自动应用阈值"
+            value={draft.auto_apply_threshold}
+            onChange={(v) => setDraft((d) => ({ ...d, auto_apply_threshold: v }))}
+            min={0}
+            max={1}
+            step={0.05}
+            hint="0–1，默认 0.90"
+          />
+          <NumberField
+            label="人工审核阈值"
+            value={draft.review_threshold}
+            onChange={(v) => setDraft((d) => ({ ...d, review_threshold: v }))}
+            min={0}
+            max={1}
+            step={0.05}
+            hint="低于此值标记为「无法确定/待整理」，不强行分类"
+          />
+        </div>
+      </div>
       <TestButton what="ai" label="测试连接" hint="使用已保存的配置发起测试" />
-      <SectionFooter saveLabel="保存 AI 分类" saving={saving} saved={saved} error={error} onSave={() => onSave(draft)} />
+      <SectionFooter
+        saveLabel="保存 AI 分类"
+        saving={saving}
+        saved={saved}
+        error={error}
+        onSave={() =>
+          onSave({
+            ...draft,
+            auto_apply_threshold: num(draft.auto_apply_threshold, value.auto_apply_threshold ?? 0.9),
+            review_threshold: num(draft.review_threshold, value.review_threshold ?? 0.65),
+          })
+        }
+      />
     </div>
   );
 }
@@ -567,6 +628,7 @@ export function SyncSectionForm({ value, saving, saved, error, onSave }: Section
     history_max_pages: String(value.history_max_pages),
     history_window_days: String(value.history_window_days ?? 14),
     history_enabled: value.history_enabled,
+    native_push_enabled: value.native_push_enabled ?? false,
   });
   useEffect(() => {
     setDraft({
@@ -574,6 +636,7 @@ export function SyncSectionForm({ value, saving, saved, error, onSave }: Section
       history_max_pages: String(value.history_max_pages),
       history_window_days: String(value.history_window_days ?? 14),
       history_enabled: value.history_enabled,
+      native_push_enabled: value.native_push_enabled ?? false,
     });
   }, [value]);
 
@@ -610,6 +673,17 @@ export function SyncSectionForm({ value, saving, saved, error, onSave }: Section
           />
         </div>
       </div>
+      <div className="rounded-[var(--lumi-radius)] border border-amber-400/40 bg-amber-400/10 px-3 py-2 space-y-2">
+        <ToggleField
+          label="自动推送 B 站原生分组"
+          checked={draft.native_push_enabled}
+          onChange={(v) => setDraft((d) => ({ ...d, native_push_enabled: v }))}
+        />
+        <p className="text-xs text-amber-200/80">
+          开启后定时任务会把本地分组差异写入 B 站原生分组（远端操作）。关闭时只能手动执行，
+          且任何远端写入都支持先 Dry Run 预览（预计创建/更新/跳过/冲突）。
+        </p>
+      </div>
       <SectionFooter
         saveLabel="保存同步设置"
         saving={saving}
@@ -621,6 +695,7 @@ export function SyncSectionForm({ value, saving, saved, error, onSave }: Section
             history_max_pages: num(draft.history_max_pages, value.history_max_pages),
             history_window_days: num(draft.history_window_days, value.history_window_days ?? 14),
             history_enabled: draft.history_enabled,
+            native_push_enabled: draft.native_push_enabled,
           })
         }
       />

@@ -38,11 +38,11 @@ async function ensureGroup(page: Page, list: Locator) {
 }
 
 test.describe("本地分组", () => {
-  test("分组卡片网格显示预置分组技术区", async ({ page }) => {
+  test("分组卡片网格显示预置分组科技数码", async ({ page }) => {
     const list = await openGroups(page);
     await expect(page.getByText(/共 \d+ 个分组/)).toBeVisible();
-    await expect(list.getByRole("heading", { name: "技术区" })).toBeVisible();
-    await expect(list.getByRole("listitem")).toHaveCount(6); // demo 种子 6 个分组
+    await expect(list.getByRole("heading", { name: "科技数码" })).toBeVisible();
+    await expect(list.getByRole("listitem")).toHaveCount(8); // demo 种子 8 个分组
   });
 
   test("新建分组（名称+选色）后出现在列表", async ({ page }) => {

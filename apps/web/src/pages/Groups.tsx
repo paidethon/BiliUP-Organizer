@@ -4,6 +4,12 @@ import { api, ApiError, type Group } from "../api";
 import { Button, Card, EmptyState, ErrorState, Spinner } from "../components/ui";
 import { GroupFormModal, type GroupFormValues } from "../components/groups/GroupFormModal";
 import { GroupDeleteModal } from "../components/groups/GroupDeleteModal";
+import { AliasModal, MergeModal } from "../components/groups/MergeModal";
+import { TagManager } from "../components/groups/TagManager";
+
+interface SimilarClusters {
+  clusters: { ids: number[]; names: string[] }[];
+}
 
 function errText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
@@ -19,8 +25,17 @@ export default function Groups() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Group | null>(null);
   const [deleting, setDeleting] = useState<Group | null>(null);
+  const [merging, setMerging] = useState<Group | null>(null);
+  const [aliasing, setAliasing] = useState<Group | null>(null);
   const [formError, setFormError] = useState("");
   const [deleteError, setDeleteError] = useState("");
+  const [notice, setNotice] = useState<{ text: string; undoId: number | null } | null>(null);
+  const [undoing, setUndoing] = useState(false);
+
+  const similarQuery = useQuery({
+    queryKey: ["groups", "similar"],
+    queryFn: () => api<SimilarClusters>("/groups/similar"),
+  });
 
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ["groups"] });
@@ -58,6 +73,23 @@ export default function Groups() {
     },
     onError: (err) => setDeleteError(errText(err, "删除失败，请重试")),
   });
+
+  function invalidateWithNotice(message: string, undoId: number | null = null) {
+    setNotice({ text: message, undoId });
+    invalidate();
+  }
+
+  async function undoMerge() {
+    if (!notice?.undoId) return;
+    setUndoing(true);
+    try {
+      await api(`/followings/undo/${notice.undoId}`, { method: "POST" });
+      setNotice({ text: "已撤销合并", undoId: null });
+      invalidate();
+    } finally {
+      setUndoing(false);
+    }
+  }
 
   const reorderMutation = useMutation({
     mutationFn: (updates: { id: number; sort_order: number }[]) =>
@@ -140,10 +172,48 @@ export default function Groups() {
       </header>
 
       <p className="text-xs text-slate-500">
-        拖动卡片（或聚焦后按 Alt+↑/↓）调整分组顺序，序号仅为显示顺序，不会写入分组名称；
+        本地分组即 UP 主的内容分类，可任意数量；与 B 站原生分组（上限 20）通过映射同步。
+        拖动卡片（或聚焦后按 Alt+↑/↓）调整顺序，序号仅为显示顺序，不会写入分组名称；
         本地分组仅保存在本站，用于筛选、提醒与 AI 建议审核，不会改动 B 站侧的关注列表；
         如需同步到 B 站原生标签，请在「设置」中配置原生分组同步。
       </p>
+
+      {notice && (
+        <p className="text-xs text-emerald-300 flex items-center gap-2" role="status">
+          {notice.text}
+          {notice.undoId && (
+            <Button variant="ghost" onClick={() => void undoMerge()} disabled={undoing} aria-label="撤销合并">
+              {undoing ? "撤销中…" : "撤销"}
+            </Button>
+          )}
+          <button type="button" className="text-slate-500" onClick={() => setNotice(null)} aria-label="关闭提示">
+            ✕
+          </button>
+        </p>
+      )}
+
+      {similarQuery.data && similarQuery.data.clusters.length > 0 && (
+        <div className="rounded-[var(--lumi-radius)] border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 space-y-1">
+          <p>
+            发现 {similarQuery.data.clusters.length} 组相似分类，可能需要合并：
+          </p>
+          <ul className="flex flex-wrap gap-2">
+            {similarQuery.data.clusters.map((cluster) => (
+              <li key={cluster.ids.join("-")} className="inline-flex items-center gap-1">
+                <span>{cluster.names.join(" ≈ ")}</span>
+                <Button
+                  variant="ghost"
+                  className="text-amber-200"
+                  onClick={() => setMerging(data?.find((g) => g.id === cluster.ids[0]) ?? null)}
+                  aria-label={`合并相似分类 ${cluster.names.join("、")}`}
+                >
+                  去合并
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {isLoading && <Spinner label="正在加载分组…" />}
       {error && <ErrorState message={errText(error, "加载失败")} />}
@@ -152,8 +222,7 @@ export default function Groups() {
       )}
 
       {data && data.length > 0 && (
-        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" aria-label="分组列表">
-          {data.map((g, index) => (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" aria-label="分组列表">          {data.map((g, index) => (
             <li
               key={g.id}
               draggable
@@ -204,7 +273,13 @@ export default function Groups() {
                 ) : (
                   <p className="text-xs text-slate-600">暂无描述</p>
                 )}
-                <div className="mt-auto flex items-center gap-2 pt-1">
+                {g.aliases && g.aliases.length > 0 && (
+                  <p className="text-xs text-slate-500 truncate" title={g.aliases.join(" / ")}>
+                    别名: {g.aliases.slice(0, 3).join(" / ")}
+                    {g.aliases.length > 3 ? " …" : ""}
+                  </p>
+                )}
+                <div className="mt-auto flex items-center gap-1.5 pt-1 flex-wrap">
                   <Button
                     variant="ghost"
                     onClick={() => {
@@ -215,6 +290,20 @@ export default function Groups() {
                     aria-label={`编辑分组 ${g.name}`}
                   >
                     编辑
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setAliasing(g)}
+                    aria-label={`管理别名 ${g.name}`}
+                  >
+                    别名
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setMerging(g)}
+                    aria-label={`合并分组 ${g.name}`}
+                  >
+                    合并…
                   </Button>
                   <Button
                     variant="ghost"
@@ -256,6 +345,15 @@ export default function Groups() {
         pending={deleteMutation.isPending}
         error={deleteError}
       />
+      <MergeModal
+        source={merging}
+        groups={data ?? []}
+        onClose={() => setMerging(null)}
+        onMerged={invalidateWithNotice}
+      />
+      <AliasModal group={aliasing} onClose={() => setAliasing(null)} />
+
+      <TagManager />
     </div>
   );
 }

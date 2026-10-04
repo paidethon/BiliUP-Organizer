@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import Literal
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 
 from app.api.deps import CurrentAdmin, DbSession
 from app.audit import log_action
@@ -19,6 +21,7 @@ from app.schemas import (
     BilibiliAccountOut,
     CookieIn,
     NativeGroupOut,
+    NativeOverwriteIn,
     NativePushIn,
     QrPollOut,
     QrStartOut,
@@ -123,6 +126,7 @@ def run_sync(payload: SyncRunIn, admin: CurrentAdmin, db: DbSession) -> SyncRunO
         "native_groups",
         "native_overwrite",
         "native_incremental",
+        "native_push",
     ):
         raise bad_request("unknown sync kind")
     settings = get_settings()
@@ -159,8 +163,10 @@ def run_sync(payload: SyncRunIn, admin: CurrentAdmin, db: DbSession) -> SyncRunO
 
         session = get_session_factory()()
         try:
-            stats = sync_service.run_sync_kind(session, payload.kind)
             run_row = session.get(SyncRun, run_id)
+            stats = sync_service.run_sync_kind(
+                session, payload.kind, run=run_row, mode=getattr(payload, "mode", None)
+            )
             if run_row is not None:
                 run_row.status = "success"
                 run_row.stats_json = json.dumps(stats, ensure_ascii=False)
@@ -228,7 +234,23 @@ def sync_native_groups(admin: CurrentAdmin, db: DbSession) -> list[NativeGroupOu
 
 
 @router.post("/native-groups/push")
-def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession) -> dict:
+def push_native_groups(
+    payload: NativePushIn,
+    admin: CurrentAdmin,
+    db: DbSession,
+    dry_run: bool = Query(default=False),
+) -> dict:
+    """Add members to a native tag. dry_run=true previews without writing."""
+    if dry_run:
+        plan = {
+            "mode": "push",
+            "dry_run": True,
+            "would_move": len(payload.mids),
+            "tag_id": payload.tag_id,
+            "notes": ["dry run：只读预览，不产生任何远端写操作"],
+        }
+        log_action(db, admin.username, "bilibili.native_groups_dry_run", detail={"mode": "push"})
+        return plan
     if get_settings().demo_mode:
         return {"ok": True, "added": len(payload.mids), "demo": True}
     from app.services.bilibili.native_groups import add_users_to_tag
@@ -244,12 +266,131 @@ def push_native_groups(payload: NativePushIn, admin: CurrentAdmin, db: DbSession
 
 
 @router.post("/native-groups/push-overwrite")
-def push_native_groups_overwrite(admin: CurrentAdmin, db: DbSession) -> dict:
-    """Backup native tags, wipe them, rebuild from local groups (manual path)."""
+def push_native_groups_overwrite(
+    admin: CurrentAdmin,
+    db: DbSession,
+    payload: NativeOverwriteIn | None = None,
+) -> dict:
+    """Explicit destructive rebuild, managed scope only (see native_sync).
+
+    Preview first: dry_run=true returns the plan (remote reads only) and must
+    be confirmed by a second call with dry_run=false.
+    """
+    dry_run = bool(payload.dry_run) if payload is not None else False
     if get_settings().demo_mode:
+        if dry_run:
+            return {
+                "mode": "overwrite",
+                "dry_run": True,
+                "scope": "managed_tags_only",
+                "managed_tags": {"科技数码": 101, "影像创作": 102},
+                "protected_remote_tags": ["手动远端组"],
+                "would_place": 12,
+                "notes": ["demo 预览：真实环境将先备份再仅重建托管标签"],
+            }
         return {"ok": True, "mode": "overwrite", "demo": True}
     from app.services import native_sync
 
-    result = native_sync.push_overwrite(db)
+    result = native_sync.push_overwrite(db, dry_run=dry_run)
+    if dry_run:
+        log_action(db, admin.username, "bilibili.native_groups_dry_run", detail={"mode": "overwrite"})
+        return result
     log_action(db, admin.username, "bilibili.native_groups_overwrite", detail={"mode": result.get("mode")})
     return {"ok": True, **result}
+
+
+class NativePushPlanIn(BaseModel):
+    mode: Literal["append", "replace"] = "append"
+
+
+@router.post("/native-groups/push-plan")
+def push_native_groups_plan(admin: CurrentAdmin, db: DbSession, payload: NativePushPlanIn) -> dict:
+    """Read-only preview of the append/replace convergence (remote GETs only)."""
+    if get_settings().demo_mode:
+        return {
+            "mode": payload.mode,
+            "dry_run": True,
+            "managed_tags": {"科技数码": 101},
+            "unmapped_local_groups": [],
+            "to_add": {"101": [42]},
+            "to_remove": {},
+            "batches": [{"tagids": [101], "mids": [42]}],
+            "planned_up_writes": 1,
+            "tag_reads_complete": True,
+            "notes": ["demo 预览：只读，不产生任何远端写操作"],
+        }
+    from app.services import native_sync
+
+    plan = native_sync.plan_push(db, mode=payload.mode)
+    log_action(db, admin.username, "bilibili.native_groups_plan", detail={"mode": payload.mode})
+    return plan
+
+
+@router.post("/native-groups/push-run")
+def push_native_groups_run(admin: CurrentAdmin, db: DbSession, payload: NativePushPlanIn) -> SyncRunOut:
+    """Start a converging native-group push (append default / replace) as a
+    tracked background task; poll /bilibili/sync/runs for live progress."""
+    if get_settings().demo_mode:
+        run = SyncRun(
+            kind="native_push",
+            status="success",
+            finished_at=utcnow(),
+            stats_json=json.dumps({"mode": payload.mode, "demo": True, "written_ups": 0}, ensure_ascii=False),
+        )
+        db.add(run)
+        db.commit()
+        return SyncRunOut(id=run.id, kind=run.kind, status=run.status, started_at=run.started_at)
+
+    from app.services import sync as sync_service
+    from app.services.settings_store import get_section_raw
+
+    if not bool(get_section_raw(db, "sync").get("native_push_enabled")):
+        raise bad_request("native_push_disabled: 在「设置 → 同步」中开启原生分组推送后再试")
+
+    run = SyncRun(kind="native_push", status="running")
+    db.add(run)
+    db.commit()
+    log_action(
+        db,
+        admin.username,
+        "bilibili.native_push_run",
+        entity_type="sync_run",
+        entity_id=run.id,
+        detail={"mode": payload.mode},
+    )
+
+    def _worker(run_id: int, mode: str) -> None:
+        from app.services.bilibili.errors import BiliError
+
+        session = get_session_factory()()
+        try:
+            run_row = session.get(SyncRun, run_id)
+            stats = sync_service.run_sync_kind(session, "native_push", mode=mode, run=run_row)
+            if run_row is not None:
+                run_row.status = "success"
+                run_row.stats_json = json.dumps(stats, ensure_ascii=False)
+                run_row.finished_at = utcnow()
+                session.commit()
+        except BiliError as exc:
+            session.rollback()
+            run_row = session.get(SyncRun, run_id)
+            if run_row is not None:
+                run_row.status = "failed"
+                run_row.error = f"bili_{exc.kind}: {exc.message}"[:2000]
+                run_row.finished_at = utcnow()
+                session.commit()
+        except Exception as exc:
+            session.rollback()
+            run_row = session.get(SyncRun, run_id)
+            if run_row is not None:
+                run_row.status = "failed"
+                run_row.error = str(exc)[:2000]
+                run_row.finished_at = utcnow()
+                session.commit()
+        finally:
+            session.close()
+
+    threading.Thread(
+        target=_worker, args=(run.id, payload.mode), daemon=True, name=f"native-push-{run.id}"
+    ).start()
+    return SyncRunOut(id=run.id, kind=run.kind, status=run.status, started_at=run.started_at)

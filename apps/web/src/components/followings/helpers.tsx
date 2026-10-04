@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Badge } from "../ui";
 
 /** Parse backend naive "YYYY-MM-DD HH:MM:SS" (or ISO) timestamps; null on failure. */
 export function parseDate(value: string | null | undefined): Date | null {
@@ -102,4 +103,24 @@ export function GroupBadge({
       {name}
     </span>
   );
+}
+
+/** 标签小徽标：内联 tag.color 作为边框与文字色，超长截断。 */
+export function TagBadge({ name, color }: { name: string; color?: string | null }) {
+  return (
+    <span
+      title={name}
+      className="px-1.5 py-0.5 rounded-full text-xs border whitespace-nowrap max-w-[110px] truncate align-middle"
+      style={color ? { borderColor: color, color } : undefined}
+    >
+      {name}
+    </span>
+  );
+}
+
+const STATUS_WARN_LABELS = new Set(["待整理", "吃灰", "无法确定"]);
+
+/** 状态标签 → Badge tone：待整理/吃灰/无法确定 → warn，重点关注等 → info。 */
+export function StatusLabelBadge({ label }: { label: string }) {
+  return <Badge tone={STATUS_WARN_LABELS.has(label) ? "warn" : "info"}>{label}</Badge>;
 }

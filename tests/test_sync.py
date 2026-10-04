@@ -67,7 +67,9 @@ def patch_fetch(monkeypatch: pytest.MonkeyPatch, name: str, result, calls: list[
     """Replace fetch_followings / fetch_history on the bilibili module.
 
     ``result`` is either the list to return or an exception instance to raise.
-    ``calls`` records (args, kwargs) of every invocation.
+    fetch_history results are wrapped in the {"entries": [...], "truncated":
+    bool} envelope the real fetcher returns. ``calls`` records (args, kwargs)
+    of every invocation.
     """
 
     def fake(*args, **kwargs):
@@ -75,6 +77,8 @@ def patch_fetch(monkeypatch: pytest.MonkeyPatch, name: str, result, calls: list[
             calls.append({"args": args, "kwargs": kwargs})
         if isinstance(result, Exception):
             raise result
+        if name == "fetch_history":
+            return {"entries": result, "truncated": False}
         return result
 
     monkeypatch.setattr(followings_module, name, fake)
@@ -195,7 +199,13 @@ def test_history_upsert_idempotent_and_stats(db: Session, monkeypatch: pytest.Mo
 
     stats = sync_service.run_watch_history_sync(db)
 
-    assert stats == {"fetched": 3, "new": 3, "ups_touched": 1}
+    assert stats == {
+        "fetched": 3,
+        "new": 3,
+        "ups_touched": 1,
+        "history_truncated": False,
+        "profiles_backfilled": 0,
+    }
     assert db.query(WatchHistory).count() == 3
     db.refresh(up)
     assert up.last_watched_at == "2026-09-02 12:30:00"
@@ -206,7 +216,13 @@ def test_history_upsert_idempotent_and_stats(db: Session, monkeypatch: pytest.Mo
 
     # identical second run: nothing new, stats stay stable
     stats2 = sync_service.run_watch_history_sync(db)
-    assert stats2 == {"fetched": 3, "new": 0, "ups_touched": 1}
+    assert stats2 == {
+        "fetched": 3,
+        "new": 0,
+        "ups_touched": 1,
+        "history_truncated": False,
+        "profiles_backfilled": 0,
+    }
     assert db.query(WatchHistory).count() == 3
     db.refresh(up)
     assert up.last_watched_at == "2026-09-02 12:30:00"
@@ -223,7 +239,13 @@ def test_history_uses_sync_settings_max_pages(db: Session, monkeypatch: pytest.M
 
     stats = sync_service.run_watch_history_sync(db)
 
-    assert stats == {"fetched": 0, "new": 0, "ups_touched": 0}
+    assert stats == {
+        "fetched": 0,
+        "new": 0,
+        "ups_touched": 0,
+        "history_truncated": False,
+        "profiles_backfilled": 0,
+    }
     assert calls[0]["kwargs"].get("max_pages") == 7
 
 
@@ -259,16 +281,16 @@ def test_run_sync_kind_full_merges_stats(db: Session, monkeypatch: pytest.Monkey
     monkeypatch.setattr(sync_service, "refresh_archives", lambda _db: 2)
     import app.services.native_sync as native_sync_module
 
-    monkeypatch.setattr(
-        native_sync_module,
-        "push_overwrite",
-        lambda _db: {"mode": "overwrite", "created_tags": 0, "placed": 0},
-    )
+    def _fail_push(_db):  # noqa: ANN001
+        raise AssertionError("full sync must not push native groups")
+
+    monkeypatch.setattr(native_sync_module, "push_overwrite", _fail_push)
 
     stats = sync_service.run_sync_kind(db, "full")
 
     # followings keys stay unprefixed; history keys are namespaced because the
-    # old flat merge let history["new"] clobber the followings "new"
+    # old flat merge let history["new"] clobber the followings "new".
+    # Native pushes are decoupled: "full" never includes them.
     assert stats["total"] == 2
     assert stats["updated"] == 1
     assert stats["archives_refreshed"] == 2
@@ -276,7 +298,7 @@ def test_run_sync_kind_full_merges_stats(db: Session, monkeypatch: pytest.Monkey
     assert stats["history_new"] == 3
     assert stats["ups_touched"] == 1
     assert stats["new"] == 1
-    assert stats["native"]["mode"] == "overwrite"
+    assert "native" not in stats
 
     with pytest.raises(ValueError):
         sync_service.run_sync_kind(db, "nope")

@@ -288,26 +288,33 @@ def test_fetch_history_maps_and_filters(logged_in_db: Session, client: BiliClien
         )
     )
 
-    entries = followings_module.fetch_history(logged_in_db, max_pages=3, client=client)
+    result = followings_module.fetch_history(logged_in_db, max_pages=3, client=client)
 
-    assert entries == [
-        {
-            "bvid": "BV1h1",
-            "title": "视频一",
-            "author_mid": 101,
-            "view_at": "2023-12-10 10:29:29",
-            "progress": 120,
-            "duration": 0,
-        },
-        {
-            "bvid": "BV1h2",
-            "title": "看完的视频",
-            "author_mid": None,
-            "view_at": "2023-11-14 22:13:20",
-            "progress": -1,
-            "duration": 0,
-        },
-    ]
+    assert result == {
+        "entries": [
+            {
+                "bvid": "BV1h1",
+                "title": "视频一",
+                "author_mid": 101,
+                "author_name": None,
+                "author_face": None,
+                "view_at": "2023-12-10 10:29:29",
+                "progress": 120,
+                "duration": 0,
+            },
+            {
+                "bvid": "BV1h2",
+                "title": "看完的视频",
+                "author_mid": None,
+                "author_name": None,
+                "author_face": None,
+                "view_at": "2023-11-14 22:13:20",
+                "progress": -1,
+                "duration": 0,
+            },
+        ],
+        "truncated": False,
+    }
 
 
 @respx.mock
@@ -329,9 +336,10 @@ def test_fetch_history_respects_max_pages(logged_in_db: Session, client: BiliCli
         side_effect=[full_page(0), full_page(20)]
     )
 
-    entries = followings_module.fetch_history(logged_in_db, max_pages=2, client=client)
+    result = followings_module.fetch_history(logged_in_db, max_pages=2, client=client)
 
-    assert len(entries) == 2 * HISTORY_PAGE_SIZE
+    assert len(result["entries"]) == 2 * HISTORY_PAGE_SIZE
+    assert result["truncated"] is True  # page cap reached with more data upstream
     assert route.call_count == 2
     assert route.calls[0].request.url.params["pn"] == "1"
     assert route.calls[1].request.url.params["pn"] == "2"
@@ -387,7 +395,10 @@ def test_list_tags_upserts_native_group_map(logged_in_db: Session, client: BiliC
 
     tags = native_groups.list_tags(logged_in_db, client=client)
 
-    assert tags == [{"bili_tag_id": 1, "bili_tag_name": "技术"}, {"bili_tag_id": 2, "bili_tag_name": "生活"}]
+    assert tags == [
+        {"bili_tag_id": 1, "bili_tag_name": "技术", "count": 0},
+        {"bili_tag_id": 2, "bili_tag_name": "生活", "count": 3},
+    ]
     assert route.called
     rows = logged_in_db.query(NativeGroupMap).order_by(NativeGroupMap.bili_tag_id).all()
     assert [r.bili_tag_name for r in rows] == ["技术", "生活"]  # inserted + renamed

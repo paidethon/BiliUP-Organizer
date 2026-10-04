@@ -1,149 +1,100 @@
-import type { Suggestion } from "../../api";
-import { Badge, EmptyState, ErrorState, Spinner } from "../ui";
-import { formatDate, relativeTime } from "../followings/helpers";
+import { useMemo } from "react";
+import type { Group, Suggestion } from "../../api";
+import { EmptyState, ErrorState } from "../ui";
+import { ReviewCard, type ReviewDecision } from "./ReviewCard";
 
 export interface SuggestionListProps {
   items: Suggestion[];
   loading: boolean;
   error: string | null;
   selected: Set<number>;
-  /** 仅 pending 建议可操作；accepted/rejected 视图隐藏操作按钮。 */
+  skipped: Set<number>;
+  /** 仅待审核视图提供勾选与操作；其余状态只读展示。 */
   actionable: boolean;
   pendingDecision: boolean;
+  groups: Group[];
   onToggle: (id: number) => void;
   onToggleAll: () => void;
-  onDecide: (ids: number[], decision: "accept" | "reject") => void;
+  onDecide: (id: number, decision: ReviewDecision) => void;
+  onSkip: (id: number) => void;
+  onEditAccept: (s: Suggestion, groupId: number | null, tags: string[]) => void;
 }
 
-function ConfidenceBar({ value }: { value: number }) {
-  const pct = Math.round(Math.min(1, Math.max(0, value)) * 100);
-  const low = value < 0.6;
+function SkeletonCard() {
   return (
-    <div className="flex items-center gap-2 min-w-[120px]" title={`置信度 ${pct}%`}>
-      <div
-        className="h-1.5 w-20 rounded-full bg-slate-700/60 overflow-hidden"
-        role="progressbar"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`置信度 ${pct}%`}
-      >
-        <div className={`h-full rounded-full ${low ? "bg-amber-400" : "bg-emerald-400"}`} style={{ width: `${pct}%` }} />
+    <div className="surface p-4 space-y-3" aria-hidden="true">
+      <div className="flex items-center gap-3">
+        <div className="h-9 w-9 rounded-full bg-slate-800 animate-pulse" />
+        <div className="flex-1 space-y-2">
+          <div className="h-3.5 w-40 rounded bg-slate-800 animate-pulse" />
+          <div className="h-3 w-64 rounded bg-slate-800/70 animate-pulse" />
+        </div>
+        <div className="h-3 w-24 rounded bg-slate-800 animate-pulse" />
       </div>
-      <span className={`text-xs tabular-nums ${low ? "text-amber-300" : "text-slate-400"}`}>{pct}%</span>
+      <div className="h-3 w-full rounded bg-slate-800/70 animate-pulse" />
+      <div className="h-3 w-2/3 rounded bg-slate-800/50 animate-pulse" />
     </div>
   );
 }
 
-const STATUS_BADGE: Record<string, { label: string; tone: "info" | "ok" | "warn" | "danger" }> = {
-  pending: { label: "待审核", tone: "warn" },
-  accepted: { label: "已通过", tone: "ok" },
-  rejected: { label: "已拒绝", tone: "danger" },
-};
-
 export function SuggestionList(props: SuggestionListProps) {
-  const { items, loading, error, selected, actionable, pendingDecision } = props;
-  const allChecked = items.length > 0 && items.every((s) => selected.has(s.id));
+  const { items, loading, error, selected, skipped, actionable } = props;
+  const selectable = useMemo(() => items.filter((s) => s.status === "pending"), [items]);
+  // 跳过的卡片沉底，靠前的未处理项自然成为下一张
+  const ordered = useMemo(
+    () => [...items].sort((a, b) => Number(skipped.has(a.id)) - Number(skipped.has(b.id))),
+    [items, skipped],
+  );
+  const allChecked = selectable.length > 0 && selectable.every((s) => selected.has(s.id));
 
-  if (loading) return <Spinner label="正在加载建议队列…" />;
+  if (loading) {
+    return (
+      <div className="space-y-3" role="status" aria-label="正在加载建议队列">
+        <SkeletonCard />
+        <SkeletonCard />
+        <SkeletonCard />
+      </div>
+    );
+  }
   if (error) return <ErrorState message={error} />;
 
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title={actionable ? "没有待审核的建议" : "没有符合条件的建议"}
+        hint="可尝试运行 AI 分类生成新建议，或调整筛选条件"
+      />
+    );
+  }
+
   return (
-    <div className="surface overflow-hidden">
-      <table className="w-full text-sm">
-        <caption className="sr-only">AI 分组建议列表</caption>
-        <thead>
-          <tr className="text-left text-xs text-slate-400 border-b border-slate-700/60">
-            {actionable && (
-              <th scope="col" className="px-3 py-2 w-10">
-                <input type="checkbox" checked={allChecked} onChange={props.onToggleAll} aria-label="全选本页建议" />
-              </th>
-            )}
-            <th scope="col" className="px-3 py-2">UP 主</th>
-            <th scope="col" className="px-3 py-2">建议分组</th>
-            <th scope="col" className="px-3 py-2">置信度</th>
-            <th scope="col" className="px-3 py-2">理由</th>
-            <th scope="col" className="px-3 py-2">模型 / 时间</th>
-            <th scope="col" className="px-3 py-2">状态</th>
-            {actionable && <th scope="col" className="px-3 py-2 w-32">操作</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {items.length === 0 && (
-            <tr>
-              <td colSpan={actionable ? 7 : 5}>
-                <EmptyState title="队列为空" hint="没有该状态的建议，可尝试运行 AI 分类生成新建议" />
-              </td>
-            </tr>
-          )}
-          {items.map((s) => {
-            const status = STATUS_BADGE[s.status] ?? { label: s.status, tone: "info" as const };
-            return (
-              <tr key={s.id} className="border-b border-slate-800/60 hover:bg-white/[0.03] align-top">
-                {actionable && (
-                  <td className="px-3 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(s.id)}
-                      onChange={() => props.onToggle(s.id)}
-                      aria-label={`选择 ${s.up_uname || `mid:${s.up_mid}`} 的建议`}
-                    />
-                  </td>
-                )}
-                <td className="px-3 py-3 font-medium">
-                  {s.up_uname || <span className="text-slate-500">mid:{s.up_mid}</span>}
-                </td>
-                <td className="px-3 py-3">
-                  {s.suggested_group_name ? (
-                    <Badge tone="info">{s.suggested_group_name}</Badge>
-                  ) : (
-                    <span className="text-xs text-slate-500">未指定</span>
-                  )}
-                </td>
-                <td className="px-3 py-3">
-                  <ConfidenceBar value={s.confidence} />
-                </td>
-                <td className="px-3 py-3 max-w-[280px]">
-                  <p className="text-xs text-slate-400 whitespace-pre-wrap break-words">{s.rationale || "—"}</p>
-                </td>
-                <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">
-                  <p className="truncate max-w-[140px]" title={s.model}>
-                    {s.model || "—"}
-                  </p>
-                  <p title={formatDate(s.created_at)}>{relativeTime(s.created_at)}</p>
-                </td>
-                <td className="px-3 py-3">
-                  <Badge tone={status.tone}>{status.label}</Badge>
-                </td>
-                {actionable && (
-                  <td className="px-3 py-3">
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        disabled={pendingDecision}
-                        onClick={() => props.onDecide([s.id], "accept")}
-                        aria-label={`通过 ${s.up_uname || `mid:${s.up_mid}`} 的建议`}
-                        className="px-2 py-1 rounded-lg text-xs bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
-                      >
-                        通过
-                      </button>
-                      <button
-                        type="button"
-                        disabled={pendingDecision}
-                        onClick={() => props.onDecide([s.id], "reject")}
-                        aria-label={`拒绝 ${s.up_uname || `mid:${s.up_mid}`} 的建议`}
-                        className="px-2 py-1 rounded-lg text-xs bg-red-500/10 text-red-300 hover:bg-red-500/20 disabled:opacity-50"
-                      >
-                        拒绝
-                      </button>
-                    </div>
-                  </td>
-                )}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      {actionable && items.length > 0 && (
+        <div className="flex items-center gap-3 px-1">
+          <label className="flex items-center gap-1.5 text-xs text-slate-400">
+            <input type="checkbox" checked={allChecked} onChange={props.onToggleAll} aria-label="全选本页" />
+            全选本页
+          </label>
+          {selected.size > 0 && <span className="text-xs text-slate-500">已选 {selected.size} 条</span>}
+        </div>
+      )}
+      <div role="table" aria-label="AI 分组建议列表" className="space-y-3">
+        {ordered.map((s) => (
+          <ReviewCard
+            key={s.id}
+            suggestion={s}
+            actionable={actionable}
+            selected={selected.has(s.id)}
+            skipped={skipped.has(s.id)}
+            pendingDecision={props.pendingDecision}
+            groups={props.groups}
+            onToggle={props.onToggle}
+            onDecide={props.onDecide}
+            onSkip={props.onSkip}
+            onEditAccept={props.onEditAccept}
+          />
+        ))}
+      </div>
     </div>
   );
 }
