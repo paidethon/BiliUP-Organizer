@@ -222,6 +222,73 @@ class WatchHistory(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class WatchAuthor(Base):
+    """Per-record author snapshot captured at history-sync time (one row per
+    watch_history id). Preserves the name/face seen when the record was synced
+    even if the profile cache later changes; used as the last-resort display
+    name for UPs that are neither followed nor freshly cached."""
+
+    __tablename__ = "watch_authors"
+    history_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    author_mid: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    author_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_face: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UpProfile(Base):
+    """Display-name/avatar cache for ANY mid seen in syncs — including UPs the
+    account never followed. Sourced from followings sync, history author
+    snapshots or bounded userinfo lookups; never a substitute for UpUser."""
+
+    __tablename__ = "up_profiles"
+    mid: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uname: Mapped[str | None] = mapped_column(Text, nullable=True)
+    face: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # followings | history | userinfo
+    source: Mapped[str] = mapped_column(Text, default="history")
+    updated_at: Mapped[str] = mapped_column(Text, default=_ts, onupdate=_ts)
+    # negative-cache bookkeeping for the bounded lookup queue
+    last_attempt_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WeeklyReport(Base):
+    """Persisted weekly report archive with revisions.
+
+    period_start/period_end_exclusive are Shanghai calendar dates and the
+    interval is half-open: [period_start 00:00, period_end_exclusive 00:00).
+    stats_json is the frozen snapshot every rendering surface (page, HTML,
+    Markdown, JSON export, email, AI) must reuse — nothing recomputes numbers
+    from "today" when showing an archived week.
+    """
+
+    __tablename__ = "weekly_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(Text, default="default", index=True)
+    period_start: Mapped[str | None] = mapped_column(Text, index=True, nullable=True)
+    period_end_exclusive: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timezone: Mapped[str] = mapped_column(Text, default="Asia/Shanghai")
+    metrics_version: Mapped[str] = mapped_column(Text, default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    is_legacy: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(Text, default="archived")  # archived|sent
+    generated_at: Mapped[str] = mapped_column(Text, default=_ts)
+    # observation cutoff: data after this moment is NOT reflected in stats
+    data_cutoff: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coverage_json: Mapped[str] = mapped_column(Text, default="{}")
+    stats_json: Mapped[str] = mapped_column(Text, default="{}")
+    html: Mapped[str] = mapped_column(Text, default="")
+    ai_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    send_status: Mapped[str | None] = mapped_column(Text, nullable=True)  # sent|failed
+    sent_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(Text, default="", index=True)
+    created_at: Mapped[str] = mapped_column(Text, default=_ts)
+    __table_args__ = (
+        UniqueConstraint("scope", "period_start", "revision", name="uq_weekly_scope_period_rev"),
+    )
+
+
 class AiSuggestion(Base):
     __tablename__ = "ai_suggestions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

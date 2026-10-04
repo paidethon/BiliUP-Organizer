@@ -221,16 +221,22 @@ def seed(db: Session) -> None:
             )
         if up.watched_count:
             for k in range(min(up.watched_count, 4)):
-                view = (now - timedelta(days=rng.randint(1, 120), hours=rng.randint(0, 23))).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                # half of the demo records land inside the current Shanghai
+                # week so the weekly charts have real data in dev/e2e
+                if k % 2 == 0:
+                    view = now - timedelta(days=rng.randint(0, 6), hours=rng.randint(0, 23))
+                else:
+                    view = now - timedelta(days=rng.randint(7, 120), hours=rng.randint(0, 23))
+                duration = rng.randint(90, 1800)
+                progress = rng.choice([-1, rng.randint(0, duration)])
                 db.add(
                     WatchHistory(
                         bvid=f"BV1d{i:03d}{k:02d}{rng.randint(10**6, 10**7 - 1)}",
                         up_mid=up.mid,
                         title=f"【{up.uname}】观看记录 {k + 1}",
-                        view_at=view,
-                        progress=rng.randint(-1, 300),
+                        view_at=view.strftime("%Y-%m-%d %H:%M:%S"),
+                        progress=progress,
+                        duration_seconds=duration,
                     )
                 )
 
