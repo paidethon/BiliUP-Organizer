@@ -92,7 +92,7 @@ export function ChartCard(props: ChartCardProps) {
           {props.table && (
             <button
               type="button"
-              className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 hover:bg-white/5"
+              className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5"
               onClick={() => setShowTable((v) => !v)}
               aria-pressed={showTable}
             >
@@ -102,7 +102,7 @@ export function ChartCard(props: ChartCardProps) {
           {props.table && (
             <button
               type="button"
-              className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 hover:bg-white/5"
+              className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5"
               onClick={exportCsv}
             >
               CSV
@@ -111,7 +111,7 @@ export function ChartCard(props: ChartCardProps) {
           {!props.noZoom && (optionFactory || children) && (
             <button
               type="button"
-              className="px-2 py-1 text-xs rounded-md border border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/10"
+              className="px-2 py-1 text-xs rounded-md border border-indigo-500/60 text-indigo-300 transition-colors duration-150 hover:bg-indigo-500/10"
               onClick={() => setZoomed(true)}
               aria-haspopup="dialog"
             >
@@ -147,7 +147,7 @@ export function ChartCard(props: ChartCardProps) {
               {props.table && (
                 <button
                   type="button"
-                  className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 hover:bg-white/5"
+                  className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5"
                   onClick={exportCsv}
                 >
                   导出 CSV
@@ -156,7 +156,7 @@ export function ChartCard(props: ChartCardProps) {
               {optionFactory && (
                 <button
                   type="button"
-                  className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 hover:bg-white/5"
+                  className="px-2 py-1 text-xs rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5"
                   onClick={() => {
                     const canvas = document.querySelector(".chart-dialog-body canvas");
                     if (canvas instanceof HTMLCanvasElement) {

@@ -125,7 +125,7 @@ export default function History() {
         {hasFilters && (
           <button
             type="button"
-            className="px-2 py-1.5 text-xs rounded-md border border-slate-700 text-slate-300 hover:bg-white/5"
+            className="px-2 py-1.5 text-xs rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5"
             onClick={() => setParams(new URLSearchParams(), { replace: false })}
           >
             清除筛选
@@ -146,7 +146,6 @@ export default function History() {
                 label="区间观看记录"
                 value={String(summary.data.entries_30d)}
                 hint={filters.start ? "当前筛选范围" : "近 30 天（上海）"}
-                onClick={() => undefined}
               />
               <StatCard label="去重 UP" value={String(summary.data.distinct_ups_watched)} hint="按 mid 去重" />
               <StatCard label="去重视频" value={String(summary.data.distinct_videos)} hint="按 bvid 去重" />
@@ -251,13 +250,16 @@ export default function History() {
               </thead>
               <tbody>
                 {list.data.items.map((item: HistoryItem, i) => (
-                  <tr key={`${item.bvid}-${item.view_at}-${i}`} className="border-b border-slate-800/60">
+                  <tr
+                    key={`${item.bvid}-${item.view_at}-${i}`}
+                    className="group border-b border-slate-800/60 transition-colors duration-150 hover:bg-white/[0.03]"
+                  >
                     <td className="py-2 px-2 max-w-[380px]">
                       <a
                         href={`https://www.bilibili.com/video/${item.bvid}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="hover:text-indigo-300 line-clamp-1"
+                        className="transition-colors duration-150 line-clamp-1 group-hover:text-indigo-300"
                       >
                         {item.title || item.bvid}
                       </a>
@@ -265,8 +267,19 @@ export default function History() {
                     <td className="py-2 px-2 whitespace-nowrap">
                       {item.up_uname ?? (item.up_mid ? `UID ${item.up_mid}` : "—")}
                     </td>
-                    <td className="py-2 px-2 whitespace-nowrap tabular-nums" title={relativeTime(item.view_at)}>
-                      {formatDateTimeShanghai(item.view_at_shanghai ?? item.view_at)}
+                    <td className="py-2 px-2 whitespace-nowrap tabular-nums">
+                      {/* hover crossfades absolute Shanghai time -> relative time */}
+                      <span className="relative inline-block">
+                        <span className="transition-opacity duration-200 group-hover:opacity-0">
+                          {formatDateTimeShanghai(item.view_at_shanghai ?? item.view_at)}
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-0 whitespace-nowrap text-indigo-300 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+                        >
+                          {relativeTime(item.view_at)}
+                        </span>
+                      </span>
                     </td>
                     <td className="py-2 px-2 whitespace-nowrap">
                       {formatProgress(item.progress)}
@@ -285,14 +298,14 @@ export default function History() {
             </span>
             <span className="flex gap-2">
               <button
-                className="px-3 py-1 rounded-md border border-slate-700 disabled:opacity-40"
+                className="px-3 py-1 rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5 disabled:opacity-40"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
               >
                 上一页
               </button>
               <button
-                className="px-3 py-1 rounded-md border border-slate-700 disabled:opacity-40"
+                className="px-3 py-1 rounded-md border border-slate-700 text-slate-300 transition-colors duration-150 hover:bg-white/5 disabled:opacity-40"
                 disabled={page >= Math.ceil(list.data.total / PAGE_SIZE)}
                 onClick={() => setPage((p) => p + 1)}
               >
@@ -310,15 +323,14 @@ function StatCard({
   label,
   value,
   hint,
-  onClick,
 }: {
   label: string;
   value: string;
   hint?: string;
-  onClick?: () => void;
 }) {
   return (
-    <Card className={onClick ? "cursor-pointer" : ""}>
+    // .surface 是未分层规则，压过 Tailwind 背景类 —— hover 用 transform/shadow
+    <Card className="transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_10px_28px_rgba(0,0,0,0.35)]">
       <div className="text-xl font-bold tabular-nums">{value}</div>
       <div className="text-xs text-slate-400 mt-1">{label}</div>
       {hint && <div className="text-[11px] text-slate-500 mt-0.5">{hint}</div>}
