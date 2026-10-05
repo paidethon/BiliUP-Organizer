@@ -177,8 +177,9 @@ def test_resolve_week_any_day_same_natural_week() -> None:
         start, end, complete = wr.resolve_week(day)
         assert format_date(start) == "2026-09-28"
         assert format_date(end) == "2026-10-05"
-        # today (2026-10-04) is still inside that week -> not complete yet
-        assert complete is False
+        # complete once the week's exclusive end is not after today; derived
+        # instead of hardcoded so the test survives date rotation
+        assert complete is (end <= wr.shanghai_today())
     # a fully past week is complete
     start, end, complete = wr.resolve_week(date(2026, 9, 21))
     assert complete is True
