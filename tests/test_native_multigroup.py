@@ -51,6 +51,7 @@ from app.services import sync as sync_service  # noqa: E402
 from app.services.bilibili import native_groups  # noqa: E402
 from app.services.bilibili.client import API_BASE  # noqa: E402
 from app.services.bilibili.errors import (  # noqa: E402
+    AccountCancelledError,
     AuthExpiredError,
     CsrfError,
     RiskControlError,
@@ -119,15 +120,25 @@ def _form_body(request: httpx.Request) -> dict[str, str]:
     return dict(parse_qsl(request.content.decode()))
 
 
+def _cancelled_envelope() -> httpx.Response:
+    return httpx.Response(200, json={"code": 22013, "message": "账号已注销，无法完成操作", "data": None})
+
+
 def _mock_push_world(
     members_by_tag: dict[int, list[int]],
     user_tags_before: dict[int, set[int]],
     user_tags_after: dict[int, set[int]] | None = None,
+    cancelled_reads: set[int] | None = None,
+    cancelled_writes: set[int] | None = None,
 ) -> dict[str, list]:
-    """Read routes + addUsers capture. When user_tags_after is given, the
-    per-UP read-back flips to it after the first addUsers call."""
-    world: dict[str, list] = {"add_calls": []}
+    """Read routes + addUsers capture. add_calls records only calls upstream
+    ACCEPTED; rejected_add_calls records the fids of 22013-rejected ones.
+    cancelled_reads/cancelled_writes model UPs whose account upstream answers
+    22013 账号已注销 for per-UP tag reads / addUsers writes respectively."""
+    world: dict[str, list] = {"add_calls": [], "rejected_add_calls": []}
     state = {"written": False}
+    cancelled_reads = cancelled_reads or set()
+    cancelled_writes = cancelled_writes or set()
 
     respx.get(f"{API_BASE}/x/relation/tags").mock(
         return_value=envelope(
@@ -146,6 +157,8 @@ def _mock_push_world(
 
     def _user_tags(request: httpx.Request) -> httpx.Response:
         fid = int(request.url.params["fid"])
+        if fid in cancelled_reads:
+            return _cancelled_envelope()
         if state["written"] and user_tags_after is not None:
             tags = user_tags_after.get(fid, set())
         else:
@@ -155,7 +168,11 @@ def _mock_push_world(
     respx.get(f"{API_BASE}/x/relation/tag/user").mock(side_effect=_user_tags)
 
     def _add_users(request: httpx.Request) -> httpx.Response:
-        world["add_calls"].append(_form_body(request))
+        body = _form_body(request)
+        if set(body["fids"].split(",")) & {str(mid) for mid in cancelled_writes}:
+            world["rejected_add_calls"].append(body["fids"])
+            return _cancelled_envelope()
+        world["add_calls"].append(body)
         state["written"] = True
         return envelope({})
 
@@ -375,6 +392,57 @@ def test_different_target_sets_never_share_a_batch(db: Session) -> None:
     assert result["verify_failed_mids"] == []
 
 
+@respx.mock
+def test_push_skips_cancelled_account_detected_in_plan(db: Session) -> None:
+    """22013 账号已注销: the UP stays in the following list and local groups,
+    but upstream rejects every relation mutation for it — the push must skip
+    the mid and succeed instead of failing the whole run."""
+    group_a, _group_b = _group_ids(db)
+    make_up(db, 401, (group_a,))
+    world = _mock_push_world(
+        members_by_tag={1: [], 2: []},
+        user_tags_before={},
+        user_tags_after={},
+        cancelled_reads={401},
+        cancelled_writes={401},
+    )
+
+    plan = native_sync.plan_push(db, mode="append")
+    assert plan["skipped_cancelled"] == [401]
+    assert plan["batches"] == []  # never enters a write batch
+
+    result = native_sync.push(db, mode="append")
+    assert world["add_calls"] == []  # nothing written for the cancelled mid
+    assert world["rejected_add_calls"] == []
+    assert result["written_ups"] == 0 and result["failed_ups"] == 0
+    assert result["skipped_cancelled"] == 1
+    assert result["skipped_cancelled_mids"] == [401]
+
+
+@respx.mock
+def test_batch_write_rejected_by_cancelled_mid_falls_back_per_up(db: Session) -> None:
+    """The plan read succeeds but addUsers rejects the shared batch (mid 404's
+    account is cancelled): fall back to one-by-one writes so 403 still
+    converges and only 404 is skipped."""
+    group_a, _group_b = _group_ids(db)
+    make_up(db, 403, (group_a,))
+    make_up(db, 404, (group_a,))  # same target set -> shares 403's batch
+    world = _mock_push_world(
+        members_by_tag={1: [], 2: []},
+        user_tags_before={403: {5}, 404: {5}},
+        user_tags_after={403: {1, 5}},
+        cancelled_writes={404},
+    )
+
+    result = native_sync.push(db, mode="append")
+
+    assert world["rejected_add_calls"] == ["403,404", "404"]  # batch + per-UP retry
+    assert [call["fids"] for call in world["add_calls"]] == ["403"]  # per-UP retry
+    assert result["written_ups"] == 1 and result["verified_ups"] == 1
+    assert result["failed_ups"] == 0
+    assert result["skipped_cancelled_mids"] == [404]
+
+
 def test_multi_group_membership_does_not_inflate_stats(db: Session) -> None:
     """One record, one UP in TWO groups: non-exclusive by_group counts it under
     both; by_group_primary attributes it exactly once; totals stay at 1."""
@@ -415,6 +483,7 @@ def test_multi_group_membership_does_not_inflate_stats(db: Session) -> None:
         (RiskControlError(), "bili_risk_control"),
         (UpstreamHttpError(404), "bili_http"),
         (UpstreamParamError(22105, "未关注"), "bili_param"),
+        (AccountCancelledError(), "bili_cancelled"),
     ],
 )
 def test_bili_errors_surface_as_structured_502(monkeypatch: pytest.MonkeyPatch, exc, expected_code) -> None:  # noqa: ANN001

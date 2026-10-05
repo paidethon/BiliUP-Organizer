@@ -95,6 +95,7 @@ def create_app() -> FastAPI:
             "bili_auth": "B 站登录已失效，请重新登录 B 站账号",
             "bili_csrf": "B 站 CSRF 校验失败，请更新 B 站 Cookie",
             "bili_risk_control": "B 站风控/限流已触发，请稍后再试",
+            "bili_cancelled": "该 UP 的 B 站账号已注销，无法对其进行分组操作",
             "bili_http": "B 站接口不可用或响应格式变化",
             "bili_contract": "B 站返回了意外的数据格式",
             "bili_param": f"B 站拒绝了该操作：{exc.message}",

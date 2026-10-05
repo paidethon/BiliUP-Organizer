@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.services.bilibili.errors import (
+    AccountCancelledError,
     AuthExpiredError,
     BiliError,
     CsrfError,
@@ -118,6 +119,11 @@ class BiliClient:
                 raise AuthExpiredError(message)
             if code == -111:
                 raise CsrfError(message)
+            # 22013 is the documented code for a cancelled target account, but
+            # some relation endpoints only carry the message — match both so
+            # pushes can skip the UP instead of failing (RESEARCH relation.md).
+            if code == 22013 or "账号已注销" in message:
+                raise AccountCancelledError(message)
             if 22100 <= code < 22200:
                 raise UpstreamParamError(code, message)
             raise BiliError(code, message)
