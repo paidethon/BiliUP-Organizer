@@ -31,6 +31,7 @@ from app.services.bilibili.client import (  # noqa: E402
     BiliClient,
 )
 from app.services.bilibili.errors import (  # noqa: E402
+    AccountCancelledError,
     AuthExpiredError,
     BiliError,
     RiskControlError,
@@ -106,6 +107,25 @@ def test_request_maps_other_codes_to_bili_error() -> None:
             client._request("GET", f"{API_BASE}/x/anything")
         assert excinfo.value.code == -400
         assert excinfo.value.message == "请求错误"
+    finally:
+        client.close()
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [(22013, "账号已注销，无法完成操作"), (-400, "账号已注销，无法完成操作")],
+)
+def test_request_maps_cancelled_account_by_code_or_message(code: int, message: str) -> None:
+    """22013 is the documented code; some relation endpoints only carry the
+    message — both must raise the typed error so pushes can skip the UP."""
+    client = make_client()
+    try:
+        respx.get(f"{API_BASE}/x/anything").mock(return_value=envelope(code=code, message=message))
+        with pytest.raises(AccountCancelledError) as excinfo:
+            client._request("GET", f"{API_BASE}/x/anything")
+        assert excinfo.value.kind == "cancelled"
+        assert excinfo.value.message == "账号已注销，无法完成操作"
     finally:
         client.close()
 

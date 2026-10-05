@@ -27,6 +27,16 @@ class RiskControlError(BiliError):
         self.kind = "risk_control"
 
 
+class AccountCancelledError(BiliError):
+    """22013: the TARGET UP's account is cancelled (注销) while still sitting in
+    the following list; upstream rejects any relation mutation for it. Per-UP
+    skippable — push callers record the mid and keep going."""
+
+    def __init__(self, message: str = "账号已注销，无法完成操作") -> None:
+        super().__init__(22013, message)
+        self.kind = "cancelled"
+
+
 class CsrfError(BiliError):
     """-111: bili_jct CSRF token rejected by upstream."""
 

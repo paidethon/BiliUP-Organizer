@@ -27,6 +27,12 @@ Relation algebra per UP (task §10):
 - every written UP is read back; one retry on mismatch, then the UP is
   reported as verify_failed. Risk control stops the run and keeps progress
   (convergence makes retries safe).
+- UPs whose account upstream reports as cancelled (22013 账号已注销 — they
+  stay in the following list but reject every relation mutation) are skipped
+  per-UP: the plan excludes them from batches, and a batch write rejected for
+  them falls back to one-by-one writes so the rest still converges. Skipped
+  mids are reported in skipped_cancelled/skipped_cancelled_mids instead of
+  failing the run.
 - backup completes BEFORE any remote write; an incomplete backup read aborts
   destructive paths. SQLite rollback cannot undo remote writes — the backup
   file plus the restore plan are the recovery path.
@@ -49,6 +55,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import GroupLocal, GroupMember, NativeGroupMap, SyncRun, UpUser
 from app.services.bilibili.cookies import load_cookies
+from app.services.bilibili.errors import AccountCancelledError
 from app.services.bilibili.native_groups import (
     DEFAULT_TAG_ID,
     create_tag,
@@ -131,8 +138,13 @@ def _compute_plan(db: Session, client, mode: str) -> dict:  # noqa: ANN001
     # per-UP target sets; R is read only for UPs whose membership would change
     managed_scope = set(tag_of_group.values())
     targets: dict[int, set[int]] = {}
+    skipped_cancelled: list[int] = []
     for mid in affected:
-        remote = user_tag_ids(db, int(mid), client=client)
+        try:
+            remote = user_tag_ids(db, int(mid), client=client)
+        except AccountCancelledError:
+            skipped_cancelled.append(int(mid))  # upstream rejects any write too
+            continue
         desired_tags = {tag for tag in tag_of_group.values() if mid in desired.get(tag, set())}
         if mode == "replace":
             targets[int(mid)] = (remote - managed_scope) | desired_tags
@@ -155,6 +167,7 @@ def _compute_plan(db: Session, client, mode: str) -> dict:  # noqa: ANN001
         "to_remove": {str(tag): sorted(mids) for tag, mids in to_remove_by_tag.items() if mids},
         "batches": [{"tagids": sorted(target), "mids": sorted(mids)} for target, mids in batches.items()],
         "planned_up_writes": len(targets),
+        "skipped_cancelled": skipped_cancelled,
         "total_managed_memberships": sum(len(mids) for mids in desired.values()),
         "tag_reads_complete": tag_reads_complete,
         "unmanaged_note": (
@@ -240,6 +253,7 @@ def push(db: Session, mode: str = "append", dry_run: bool = False, run: SyncRun 
 
         # 3) write batches (identical target sets only), then read back each UP
         written = verified = failed = 0
+        skipped_cancelled = [int(mid) for mid in plan.get("skipped_cancelled", [])]
         verify_failed: list[int] = []
         batches = plan.get("batches", [])
         total_batches = len(batches)
@@ -251,10 +265,16 @@ def push(db: Session, mode: str = "append", dry_run: bool = False, run: SyncRun 
                 target_tagids = [DEFAULT_TAG_ID]
             for start in range(0, len(batch["mids"]), _WRITE_BATCH):
                 chunk = batch["mids"][start : start + _WRITE_BATCH]
-                set_users_tags(db, chunk, target_tagids, client=client)
-                written += len(chunk)
+                written += _write_chunk_skipping_cancelled(
+                    db, chunk, target_tagids, client, skipped_cancelled
+                )
             _update_run(db, run, phase="write", batch=index + 1, total_batches=total_batches, written=written)
+            # mids are unique per batch, so the cumulative set is exactly the
+            # cancelled mids written for THIS batch
+            cancelled_mids = set(skipped_cancelled)
             for mid in batch["mids"]:
+                if int(mid) in cancelled_mids:
+                    continue  # upstream rejects both the write and the read-back
                 if _verify_user_tags(db, mid, target_tagids, client):
                     verified += 1
                 else:
@@ -275,12 +295,34 @@ def push(db: Session, mode: str = "append", dry_run: bool = False, run: SyncRun 
             "verified_ups": verified,
             "failed_ups": failed,
             "verify_failed_mids": verify_failed,
+            "skipped_cancelled": len(skipped_cancelled),
+            "skipped_cancelled_mids": skipped_cancelled,
             "to_add": plan.get("to_add", {}),
             "to_remove": plan.get("to_remove", {}),
             "total_managed_memberships": plan.get("total_managed_memberships", 0),
         }
     finally:
         client.close()
+
+
+def _write_chunk_skipping_cancelled(
+    db: Session, chunk: list[int], target_tagids: list[int], client, cancelled_out: list[int]
+) -> int:  # noqa: ANN001
+    """Submit one addUsers chunk. When upstream rejects the whole batch because
+    one mid's account is cancelled (22013), retry per-UP: the cancelled mids go
+    to ``cancelled_out`` (never counted as written), the rest still converge.
+    Non-cancelled batch errors propagate unchanged — only 22013 is skippable."""
+    try:
+        return set_users_tags(db, chunk, target_tagids, client=client)
+    except AccountCancelledError:
+        written = 0
+        for mid in chunk:
+            try:
+                set_users_tags(db, [int(mid)], target_tagids, client=client)
+                written += 1
+            except AccountCancelledError:
+                cancelled_out.append(int(mid))
+        return written
 
 
 def _verify_user_tags(db: Session, mid: int, expected_tagids: list[int], client) -> bool:  # noqa: ANN001
@@ -416,11 +458,15 @@ def push_overwrite(db: Session, dry_run: bool = False, run: SyncRun | None = Non
         db.commit()
 
         desired = _desired_by_tag(db, new_map)
+        skipped_cancelled: list[int] = []
         for tag_id, mids in desired.items():
             ordered = sorted(mids)
             for start in range(0, len(ordered), _WRITE_BATCH):
-                set_users_tags(db, ordered[start : start + _WRITE_BATCH], [tag_id], client=client)
+                _write_chunk_skipping_cancelled(
+                    db, ordered[start : start + _WRITE_BATCH], [tag_id], client, skipped_cancelled
+                )
             placed += len(ordered)
+        placed -= len(skipped_cancelled)  # reported separately, never as placed
 
         _update_primary_tags(db)
         return {
@@ -430,6 +476,8 @@ def push_overwrite(db: Session, dry_run: bool = False, run: SyncRun | None = Non
             "deleted_tags": deleted,
             "created_tags": created,
             "placed": placed,
+            "skipped_cancelled": len(skipped_cancelled),
+            "skipped_cancelled_mids": skipped_cancelled,
         }
     finally:
         client.close()

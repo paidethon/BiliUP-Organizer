@@ -37,6 +37,20 @@ test.describe("观看历史", () => {
     await expect(stampCell).toBeVisible({ timeout: 20_000 });
   });
 
+  test("行 hover 交换为相对时间并高亮", async ({ page }) => {
+    await login(page);
+    await page.goto("/history");
+    const row = page.locator("tbody tr").nth(1);
+    await row.waitFor({ timeout: 20_000 });
+    const stamp = row.locator("td").nth(2);
+    // 基线：绝对时间可见，相对时间层隐藏
+    await expect(stamp.getByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)).toHaveCSS("opacity", "1");
+    await row.hover();
+    // hover 后：绝对时间淡出、相对时间淡入（200ms 过渡，留余量）
+    await expect(stamp.getByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)).toHaveCSS("opacity", "0", { timeout: 5_000 });
+    await expect(stamp.getByText(/前$|刚刚/)).toHaveCSS("opacity", "1");
+  });
+
   test("日期筛选写入 URL 并生效", async ({ page }) => {
     await login(page);
     await page.goto("/history");
