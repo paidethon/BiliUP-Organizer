@@ -17,6 +17,7 @@ interface ConvergePlan extends NativePlan {
   tag_reads_complete?: boolean;
   protected_remote_tags?: string[];
   unmanaged_note?: string;
+  skipped_cancelled?: number[];
 }
 
 type Mode = "append" | "replace";
@@ -156,6 +157,9 @@ export function NativeSyncCard() {
             <span className="ml-2">
               写入 {String(nativeRun.stats.written_ups ?? 0)} · 校验通过 {String(nativeRun.stats.verified_ups ?? 0)}
               {nativeRun.stats.failed_ups ? ` · 校验失败 ${String(nativeRun.stats.failed_ups)}` : ""}
+              {Array.isArray(nativeRun.stats.skipped_cancelled_mids) &&
+                nativeRun.stats.skipped_cancelled_mids.length > 0 &&
+                ` · 已注销跳过 ${nativeRun.stats.skipped_cancelled_mids.length}`}
             </span>
           )}
           {nativeRun.error && <span className="text-red-300 ml-2">{nativeRun.error}</span>}
@@ -193,6 +197,12 @@ export function NativeSyncCard() {
             </p>
           )}
           {typeof plan.planned_up_writes === "number" && <p>预计写入 UP 数：{plan.planned_up_writes}</p>}
+          {plan.skipped_cancelled && plan.skipped_cancelled.length > 0 && (
+            <p className="text-amber-300">
+              ⚠ {plan.skipped_cancelled.length} 个 UP 的 B 站账号已注销，将跳过其分组写入（mid：
+              {plan.skipped_cancelled.join("、")}）。
+            </p>
+          )}
           {plan.tag_reads_complete === false && (
             <p className="text-amber-300">⚠ 远端成员读取被页数上限截断，写入前请确认或调大上限。</p>
           )}
