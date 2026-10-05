@@ -5,7 +5,6 @@ Prints tag inventory and finds a followed UP that belongs to >= 2 tags
 (multi-group evidence). No writes.
 """
 
-import json
 import time
 
 
