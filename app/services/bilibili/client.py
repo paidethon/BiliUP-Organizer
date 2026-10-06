@@ -55,7 +55,7 @@ class BiliClient:
     - ``poll_qrcode(qrcode_key) -> dict`` (status + cookies on confirm)
     - ``get_followings(mid, page, page_size=50) -> dict`` (total, list)
     - ``get_all_followings(mid) -> list[dict]``
-    - ``get_user_archives(mid, page=1, page_size=30) -> dict`` (total, vlist)
+    - ``get_user_archives(mid, page=1, page_size=30) -> dict`` (total, vlist, tlist)
     - ``get_latest_archive(mid) -> dict | None``
     - ``get_history(page=1, page_size=20) -> dict`` (total, list)
     - ``close() -> None``
@@ -252,7 +252,12 @@ class BiliClient:
     # --------------------------------------------------------------- archives
 
     def get_user_archives(self, mid: int, page: int = 1, page_size: int = ARCHIVE_PAGE_SIZE) -> dict:
-        """Wbi-signed UP uploads page, newest first (RESEARCH §5)."""
+        """Wbi-signed UP uploads page, newest first (RESEARCH §5).
+
+        Returns {"total", "vlist", "tlist"}: tlist is the response's
+        typeid→分区名 index ({"147": "科技", ...}) — vlist items carry only
+        `typeid`, never a usable `tname`, so callers resolve the category via
+        this map."""
         data = self._request(
             "GET",
             f"{API_BASE}/x/space/wbi/arc/search",
@@ -261,8 +266,16 @@ class BiliClient:
         )
         data = dict(data or {})
         page_info = dict(data.get("page") or {})
-        vlist = dict(data.get("list") or {}).get("vlist") or []
-        return {"total": _as_int(page_info.get("count"), 0), "vlist": list(vlist)}
+        list_obj = dict(data.get("list") or {})
+        vlist = list(list_obj.get("vlist") or [])
+        tlist = _tname_index(list_obj.get("tlist"))
+        return {"total": _as_int(page_info.get("count"), 0), "vlist": vlist, "tlist": tlist}
+
+    def get_video_info(self, bvid: str) -> dict:
+        """One video's metadata via GET /x/web-interface/view (no wbi):
+        {bvid, title, tname, pubdate, duration(s), owner{mid,...}}."""
+        data = self._request("GET", f"{API_BASE}/x/web-interface/view", params={"bvid": str(bvid)})
+        return dict(data or {})
 
     def get_latest_archive(self, mid: int) -> dict | None:
         vlist = self.get_user_archives(mid, page=1)["vlist"]
@@ -287,6 +300,17 @@ class BiliClient:
 
     def close(self) -> None:
         self._http.close()
+
+
+def _tname_index(tlist: Any) -> dict[str, str]:
+    """Normalize data.list.tlist to {typeid_str: tname}; tolerate absence."""
+    if not isinstance(tlist, dict):
+        return {}
+    index: dict[str, str] = {}
+    for key, value in tlist.items():
+        if isinstance(value, dict) and value.get("tname"):
+            index[str(key)] = str(value["tname"])
+    return index
 
 
 def _parse_body(response: httpx.Response) -> dict[str, Any]:

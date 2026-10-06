@@ -471,3 +471,117 @@ def test_unfollow_users_stops_on_risk_control(logged_in_db: Session) -> None:
         assert sleeps == [2.0, 4.0]
     finally:
         client.close()
+
+
+# ------------------------------------------------- tname (分区名) resolution
+
+
+@respx.mock
+def test_get_user_archives_returns_tlist_index(logged_in_db: Session, client: BiliClient) -> None:
+    """arc/search vlist items carry only typeid — the tlist index is the
+    typeid→分区名 map callers must use."""
+    mock_nav()
+    respx.get(f"{API_BASE}/x/space/wbi/arc/search").mock(
+        return_value=envelope(
+            {
+                "list": {
+                    "vlist": [{"bvid": "BV1t", "title": "视频", "typeid": 147, "created": EP1}],
+                    "tlist": {"147": {"tname": "科技", "count": 3}, "231": {"tname": "计算机技术"}},
+                },
+                "page": {"count": 1},
+            }
+        )
+    )
+
+    archives = client.get_user_archives(101)
+
+    assert archives["tlist"] == {"147": "科技", "231": "计算机技术"}
+
+
+@respx.mock
+def test_store_archives_resolves_tname_from_tlist(logged_in_db: Session, client: BiliClient) -> None:
+    """No tname on vlist rows (the real-world contract) — 分区名 must come from
+    tlist via typeid, otherwise videos.tname stays NULL forever."""
+    from app.models import Video
+
+    mock_nav()
+    respx.get(f"{API_BASE}/x/space/wbi/arc/search").mock(
+        return_value=envelope(
+            {
+                "list": {
+                    "vlist": [
+                        {
+                            "bvid": "BV1n",
+                            "title": "无分区字段",
+                            "typeid": 201,
+                            "created": EP1,
+                            "length": "1:00",
+                        }
+                    ],
+                    "tlist": {"201": {"tname": "教育"}},
+                },
+                "page": {"count": 1},
+            }
+        )
+    )
+
+    followings_module.fetch_recent_archives(logged_in_db, [101], client=client)
+
+    row = logged_in_db.query(Video).filter(Video.bvid == "BV1n").one()
+    assert row.tname == "教育"
+
+
+@respx.mock
+def test_backfill_watched_video_details_creates_missing_videos(
+    logged_in_db: Session, client: BiliClient
+) -> None:
+    """Watched videos absent from the archive scan get bounded per-bvid
+    metadata lookups so the weekly 内容分区 chart has data."""
+    from app.models import Video, WatchHistory
+    from app.util import utcnow
+
+    recent = utcnow()
+    logged_in_db.add(WatchHistory(bvid="BV1watched", up_mid=101, title="看过的", view_at=recent, progress=10))
+    logged_in_db.commit()
+
+    route = respx.get(f"{API_BASE}/x/web-interface/view").mock(
+        return_value=envelope(
+            {
+                "bvid": "BV1watched",
+                "title": "回填标题",
+                "tname": "知识",
+                "pubdate": EP1,
+                "duration": 925,
+                "owner": {"mid": 101, "name": "UP甲", "face": ""},
+            }
+        )
+    )
+
+    result = followings_module.backfill_watched_video_details(logged_in_db, client=client)
+
+    assert result == {"filled": 1}
+    assert route.call_count == 1
+    row = logged_in_db.query(Video).filter(Video.bvid == "BV1watched").one()
+    assert row.tname == "知识"
+    assert row.up_mid == 101
+    assert row.duration == "15:25"  # seconds -> arc length convention (MM:SS)
+
+
+@respx.mock
+def test_backfill_skips_videos_already_having_tname(logged_in_db: Session, client: BiliClient) -> None:
+    from app.models import Video, WatchHistory
+    from app.util import utcnow
+
+    recent = utcnow()
+    logged_in_db.add(WatchHistory(bvid="BV1known", up_mid=101, title="看过的", view_at=recent, progress=1))
+    logged_in_db.add(
+        Video(bvid="BV1known", up_mid=101, title="已有", tname="游戏", pubdate=None, duration=None)
+    )
+    logged_in_db.commit()
+
+    route = respx.get(f"{API_BASE}/x/web-interface/view").mock(return_value=envelope({}))
+
+    result = followings_module.backfill_watched_video_details(logged_in_db, client=client)
+
+    assert result == {"filled": 0}
+    assert route.call_count == 0

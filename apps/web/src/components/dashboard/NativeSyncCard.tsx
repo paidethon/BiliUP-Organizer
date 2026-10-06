@@ -10,6 +10,7 @@ function errText(err: unknown, fallback: string): string {
 interface ConvergePlan extends NativePlan {
   managed_tags?: Record<string, number>;
   unmapped_local_groups?: string[];
+  stale_mappings_cleared?: string[];
   to_add?: Record<string, number[]>;
   to_remove?: Record<string, number[]>;
   planned_up_writes?: number;
@@ -206,6 +207,12 @@ export function NativeSyncCard() {
           {plan.tag_reads_complete === false && (
             <p className="text-amber-300">⚠ 远端成员读取被页数上限截断，写入前请确认或调大上限。</p>
           )}
+          {plan.stale_mappings_cleared?.length ? (
+            <p className="text-amber-300">
+              ⚠ 已清理 {plan.stale_mappings_cleared.length} 条失效映射（对应 B 站分组已被删除）：
+              {plan.stale_mappings_cleared.join("、")}。执行时将按本地分组名重建这些原生分组。
+            </p>
+          ) : null}
           {plan.unmapped_local_groups?.length ? (
             <p className="text-amber-300">未映射到原生标签的本地分组：{plan.unmapped_local_groups.join("、")}（执行时将自动创建）</p>
           ) : null}
