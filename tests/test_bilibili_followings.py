@@ -532,6 +532,63 @@ def test_store_archives_resolves_tname_from_tlist(logged_in_db: Session, client:
 
 
 @respx.mock
+def test_store_archives_falls_back_to_bundled_zone_table(logged_in_db: Session, client: BiliClient) -> None:
+    """Upstream removed tname AND tlist from arc/search responses — the bundled
+    tid→分区名 table is the last-resort resolver (47 = 同人·手书)."""
+    from app.models import Video
+
+    mock_nav()
+    respx.get(f"{API_BASE}/x/space/wbi/arc/search").mock(
+        return_value=envelope(
+            {
+                "list": {
+                    "vlist": [{"bvid": "BV1z47", "title": "无任何分区字段", "typeid": 47, "created": EP1}]
+                },
+                "page": {"count": 1},
+            }
+        )
+    )
+
+    followings_module.fetch_recent_archives(logged_in_db, [101], client=client)
+
+    row = logged_in_db.query(Video).filter(Video.bvid == "BV1z47").one()
+    assert row.tname == "同人·手书"
+
+
+@respx.mock
+def test_backfill_resolves_tname_from_tid_when_view_tname_empty(
+    logged_in_db: Session, client: BiliClient
+) -> None:
+    """/x/web-interface/view answers tname="" in the wild — resolve via tid."""
+    from app.models import Video, WatchHistory
+    from app.util import utcnow
+
+    recent = utcnow()
+    logged_in_db.add(WatchHistory(bvid="BV1tid47", up_mid=101, title="看过的", view_at=recent, progress=1))
+    logged_in_db.commit()
+
+    respx.get(f"{API_BASE}/x/web-interface/view").mock(
+        return_value=envelope(
+            {
+                "bvid": "BV1tid47",
+                "title": "回填标题",
+                "tid": 47,
+                "tname": "",
+                "pubdate": EP1,
+                "duration": 600,
+                "owner": {"mid": 101, "name": "UP甲", "face": ""},
+            }
+        )
+    )
+
+    result = followings_module.backfill_watched_video_details(logged_in_db, client=client)
+
+    assert result == {"filled": 1}
+    row = logged_in_db.query(Video).filter(Video.bvid == "BV1tid47").one()
+    assert row.tname == "同人·手书"
+
+
+@respx.mock
 def test_backfill_watched_video_details_creates_missing_videos(
     logged_in_db: Session, client: BiliClient
 ) -> None:
