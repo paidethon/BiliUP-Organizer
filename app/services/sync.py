@@ -266,26 +266,33 @@ def run_watch_history_sync(db: Session) -> dict:
 
     backfill = _backfill_guarded(db, backfill_missing_profiles)
 
+    # watched-video metadata backfill: the 内容分区 chart and AI classifier read
+    # videos.tname, but the archive scan alone misses most watched videos
+    from app.services.bilibili.followings import backfill_watched_video_details
+
+    video_backfill = _backfill_guarded(db, backfill_watched_video_details, window_days=window_days)
+
     return {
         "fetched": len(entries),
         "new": new,
         "ups_touched": len(touched),
         "history_truncated": truncated,
         "profiles_backfilled": backfill.get("looked_up", 0) if isinstance(backfill, dict) else 0,
+        "videos_backfilled": video_backfill.get("filled", 0) if isinstance(video_backfill, dict) else 0,
     }
 
 
-def _backfill_guarded(db: Session, backfill) -> dict:  # noqa: ANN001
-    """Bounded nickname backfill; auth/risk errors flag the account like any
-    other upstream call but never fail the history sync itself. Disabled in
-    the test environment so the suite never touches the network."""
+def _backfill_guarded(db: Session, backfill, **kwargs) -> dict:  # noqa: ANN001
+    """Bounded nickname/video backfill; auth/risk errors flag the account like
+    any other upstream call but never fail the history sync itself. Disabled
+    in the test environment so the suite never touches the network."""
     from app.config import get_settings
     from app.services.bilibili.errors import AuthExpiredError, RiskControlError
 
     if get_settings().app_env == "test":
         return {"skipped": "test_env"}
     try:
-        result = backfill(db)
+        result = backfill(db, **kwargs)
         db.commit()
         return result if isinstance(result, dict) else {}
     except (AuthExpiredError, RiskControlError):

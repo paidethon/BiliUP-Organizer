@@ -55,7 +55,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import GroupLocal, GroupMember, NativeGroupMap, SyncRun, UpUser
 from app.services.bilibili.cookies import load_cookies
-from app.services.bilibili.errors import AccountCancelledError
+from app.services.bilibili.errors import AccountCancelledError, UpstreamParamError
 from app.services.bilibili.native_groups import (
     DEFAULT_TAG_ID,
     create_tag,
@@ -86,6 +86,28 @@ def _managed_tag_map(db: Session) -> dict[int, int]:
     }
 
 
+def _drop_stale_mappings(db: Session, remote_tags: list[dict]) -> list[str]:
+    """Clear local-group mappings whose native tag no longer exists upstream.
+
+    Tags can be deleted outside the app (manually on Bilibili); the stale
+    mapping then poisons every plan (member reads answer 22104 该分组不存在)
+    and every write. The remote tag list is the authoritative id set — no
+    extra upstream calls. Returns the affected local group names; pushes
+    recreate their tags from the local names (they read as unmapped now)."""
+    remote_ids = {int(t["bili_tag_id"]) for t in remote_tags}
+    stale: list[str] = []
+    for row in db.query(NativeGroupMap).all():
+        if row.local_group_id is None or int(row.bili_tag_id) in remote_ids:
+            continue
+        group = db.get(GroupLocal, int(row.local_group_id))
+        stale.append(group.name if group else f"tag-{row.bili_tag_id}")
+        row.local_group_id = None
+        row.synced_at = utcnow()
+    if stale:
+        db.commit()
+    return stale
+
+
 def _desired_by_tag(db: Session, tag_of_group: dict[int, int]) -> dict[int, set[int]]:
     """bili_tag_id -> member mids, straight from the membership table."""
     rows = (
@@ -104,11 +126,20 @@ def _desired_by_tag(db: Session, tag_of_group: dict[int, int]) -> dict[int, set[
 
 def _read_remote_tag_members(db: Session, tag_ids: list[int], client) -> tuple[dict[int, set[int]], bool]:  # noqa: ANN001
     """Per-tag current membership; the bool is False when any tag's member
-    list was truncated by the hard page cap (plans must surface that)."""
+    list was truncated by the hard page cap (plans must surface that).
+    22104 该分组不存在 on one tag means it was deleted upstream between the
+    listing and this read — its members fell back to the default tag, so an
+    empty set is the truth; other failures propagate."""
     current: dict[int, set[int]] = {}
     complete = True
     for tag_id in tag_ids:
-        mids, tag_complete = list_tag_users(db, tag_id, client=client)
+        try:
+            mids, tag_complete = list_tag_users(db, tag_id, client=client)
+        except UpstreamParamError as exc:
+            if exc.code != 22104:
+                raise
+            current[tag_id] = set()
+            continue
         current[tag_id] = set(mids)
         complete = complete and tag_complete
     return current, complete
@@ -116,7 +147,8 @@ def _read_remote_tag_members(db: Session, tag_ids: list[int], client) -> tuple[d
 
 def _compute_plan(db: Session, client, mode: str) -> dict:  # noqa: ANN001
     """Shared read-only planner for append/replace pushes."""
-    list_tags(db, client=client)  # refreshes the native_group_map name cache
+    tags = list_tags(db, client=client)  # refreshes the native_group_map name cache
+    stale_mappings = _drop_stale_mappings(db, tags)
     managed = _managed_tag_map(db)
     groups = {int(g.id): g for g in db.query(GroupLocal).all()}
     tag_of_group = {gid: tid for gid, tid in managed.items() if gid in groups}
@@ -163,6 +195,7 @@ def _compute_plan(db: Session, client, mode: str) -> dict:  # noqa: ANN001
             groups[gid].name: tid for gid, tid in sorted(tag_of_group.items(), key=lambda kv: kv[1])
         },
         "unmapped_local_groups": unmapped_local_groups,
+        "stale_mappings_cleared": stale_mappings,
         "to_add": {str(tag): sorted(mids) for tag, mids in to_add_by_tag.items() if mids},
         "to_remove": {str(tag): sorted(mids) for tag, mids in to_remove_by_tag.items() if mids},
         "batches": [{"tagids": sorted(target), "mids": sorted(mids)} for target, mids in batches.items()],
@@ -230,6 +263,7 @@ def push(db: Session, mode: str = "append", dry_run: bool = False, run: SyncRun 
 
         _update_run(db, run, phase="plan")
         plan = _compute_plan(db, client, mode)
+        stale_cleared = list(plan.get("stale_mappings_cleared", []))
 
         # 2) create native tags for mapped local groups that have none yet
         created = 0
@@ -297,6 +331,7 @@ def push(db: Session, mode: str = "append", dry_run: bool = False, run: SyncRun 
             "verify_failed_mids": verify_failed,
             "skipped_cancelled": len(skipped_cancelled),
             "skipped_cancelled_mids": skipped_cancelled,
+            "stale_mappings_cleared": stale_cleared,
             "to_add": plan.get("to_add", {}),
             "to_remove": plan.get("to_remove", {}),
             "total_managed_memberships": plan.get("total_managed_memberships", 0),
@@ -429,10 +464,18 @@ def push_overwrite(db: Session, dry_run: bool = False, run: SyncRun | None = Non
             }
 
         _update_run(db, run, phase="rebuild")
+        remote_tags = list_tags(db, client=client)
+        remote_ids = {int(t["bili_tag_id"]) for t in remote_tags}
+        # the rebuild scope is every local group that HAD a mapping — including
+        # ones whose tag was deleted upstream (their mapping is cleared below,
+        # but the native projection must still be rebuilt from the local name)
         managed = _managed_tag_map(db)
+        stale_mappings = _drop_stale_mappings(db, remote_tags)
         groups = {int(g.id): g for g in db.query(GroupLocal).all()}
         deleted = 0
         for _local_id, tag_id in sorted(managed.items()):
+            if tag_id not in remote_ids:
+                continue  # vanished upstream; delete_tag would answer 22104
             delete_tag(db, tag_id, client=client)
             deleted += 1
 
@@ -478,6 +521,7 @@ def push_overwrite(db: Session, dry_run: bool = False, run: SyncRun | None = Non
             "placed": placed,
             "skipped_cancelled": len(skipped_cancelled),
             "skipped_cancelled_mids": skipped_cancelled,
+            "stale_mappings_cleared": stale_mappings,
         }
     finally:
         client.close()
@@ -495,6 +539,7 @@ def plan_overwrite(db: Session) -> dict:
     client = build_client(db)
     try:
         tags = list_tags(db, client=client)
+        stale_mappings = _drop_stale_mappings(db, tags)
         managed = _managed_tag_map(db)
         groups = {int(g.id): g for g in db.query(GroupLocal).all()}
         desired = _desired_by_tag(db, managed)
@@ -514,6 +559,7 @@ def plan_overwrite(db: Session) -> dict:
                 for t in tags
                 if t["bili_tag_id"] > 0 and t["bili_tag_id"] not in managed.values()
             ],
+            "stale_mappings_cleared": stale_mappings,
             "would_place": would_place,
             "tag_reads_complete": tag_reads_complete,
             "notes": [_DRY_RUN_NOTE, "仅重建映射到本地分组的原生标签；未托管的远端分组不会被删除"],

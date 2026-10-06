@@ -129,14 +129,12 @@ def fetch_recent_archives(
     try:
         for mid in mids[:max_ups]:
             try:
-                vlist = c.get_user_archives(mid, page=1, page_size=min(per_up, _ARCHIVE_FETCH_PAGE_CAP))[
-                    "vlist"
-                ]
+                archives = c.get_user_archives(mid, page=1, page_size=min(per_up, _ARCHIVE_FETCH_PAGE_CAP))
             except BiliError as exc:
                 log.warning("archives fetch failed for mid %s: %s", mid, exc)
                 continue
             try:
-                _store_archives(db, mid, vlist[:per_up])
+                _store_archives(db, mid, archives["vlist"][:per_up], tlist=archives.get("tlist") or {})
             except IntegrityError as exc:
                 db.rollback()
                 log.warning("archives store failed for mid %s: %s", mid, exc)
@@ -149,12 +147,15 @@ def fetch_recent_archives(
     return refreshed
 
 
-def _store_archives(db: Session, mid: int, vlist: list[dict]) -> None:
+def _store_archives(db: Session, mid: int, vlist: list[dict], tlist: dict[str, str] | None = None) -> None:
     """Upsert archive rows into videos and refresh the UP's last-video fields.
 
     bvid is unique across the whole table — different UPs' upload lists can
     contain the same entry (cross-UP collabs, reposts), so dedupe by bvid
-    globally, not just within this UP.
+    globally, not just within this UP. The 分区名 comes from arc tname when
+    present, else from the response's tlist typeid index (vlist items carry
+    only typeid — storing nothing would leave videos.tname permanently NULL
+    and the weekly 内容分区 chart empty).
     """
     from app.models import UpUser, Video
 
@@ -167,7 +168,7 @@ def _store_archives(db: Session, mid: int, vlist: list[dict]) -> None:
         if not bvid:
             continue
         title = str(arc.get("title") or "")
-        tname = str(arc.get("tname") or "") or None
+        tname = _archive_tname(arc, tlist)
         pubdate = _epoch_ts(arc.get("created"))
         length = str(arc.get("length") or "") or None
         row = existing.get(bvid)
@@ -272,6 +273,119 @@ def _official_type(verify: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return -1
+
+
+def _archive_tname(arc: dict, tlist: dict[str, str] | None) -> str | None:
+    """分区名 for one archive row: direct tname field, else the tlist index
+    keyed by typeid (arc/search vlist items carry typeid but no tname)."""
+    name = str(arc.get("tname") or "")
+    if name:
+        return name
+    if tlist:
+        mapped = tlist.get(str(arc.get("typeid") or ""))
+        if mapped:
+            return mapped
+    return None
+
+
+def backfill_watched_video_details(
+    db: Session,
+    client: BiliClient | None = None,
+    *,
+    window_days: int = 14,
+    max_videos: int = 120,
+) -> int:
+    """Bounded metadata backfill for recently WATCHED videos missing in the
+    videos table (or still without 分区名): GET /x/web-interface/view per
+    bvid, no wbi, throttled like every upstream call.
+
+    The archive scan only caches the newest ≤10 uploads of the ≤40 UPs it
+    visits, so most watched videos never enter the videos table and the
+    weekly 内容分区 chart aggregates nothing. Fills up to ``max_videos`` per
+    run, newest watch first; per-video failures are logged and skipped.
+    Returns the number of videos upserted."""
+    from app.models import Video, WatchHistory
+
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).strftime("%Y-%m-%d %H:%M:%S")
+    watched = (
+        db.query(WatchHistory.bvid, WatchHistory.up_mid, WatchHistory.view_at)
+        .filter(WatchHistory.bvid.isnot(None), WatchHistory.bvid != "", WatchHistory.view_at >= cutoff)
+        .order_by(WatchHistory.view_at.desc())
+        .all()
+    )
+    seen: dict[str, int] = {}
+    for bvid, up_mid, _view_at in watched:
+        seen.setdefault(str(bvid), int(up_mid or 0))
+    if not seen:
+        return {"filled": 0}
+    have_tname = {
+        row.bvid
+        for row in db.query(Video.bvid, Video.tname).filter(Video.bvid.in_(list(seen))).all()
+        if row.tname
+    }
+    todo = [bvid for bvid in seen if bvid not in have_tname][:max_videos]
+    if not todo:
+        return {"filled": 0}
+
+    own = client is None
+    c = client or build_client(db)
+    filled = 0
+    try:
+        for bvid in todo:
+            try:
+                info = c.get_video_info(bvid)
+            except BiliError as exc:
+                log.warning("video info fetch failed for %s: %s", bvid, exc)
+                continue
+            if not isinstance(info, dict) or not info.get("bvid"):
+                continue
+            owner = info.get("owner") if isinstance(info.get("owner"), dict) else {}
+            title = str(info.get("title") or "")
+            tname = str(info.get("tname") or "") or None
+            pubdate = _epoch_ts(info.get("pubdate"))
+            duration = _seconds_to_length(info.get("duration"))
+            up_mid = _as_int(owner.get("mid")) or seen.get(bvid) or 0
+            row = db.query(Video).filter(Video.bvid == bvid).first()
+            if row is None:
+                db.add(
+                    Video(
+                        bvid=bvid,
+                        up_mid=up_mid,
+                        title=title,
+                        tname=tname,
+                        pubdate=pubdate,
+                        duration=duration,
+                    )
+                )
+            else:
+                row.title = title or row.title
+                row.tname = tname or row.tname
+                row.pubdate = pubdate or row.pubdate
+                row.duration = duration or row.duration
+            filled += 1
+        db.commit()
+    finally:
+        if own:
+            c.close()
+    return {"filled": filled}
+
+
+def _seconds_to_length(value: Any) -> str | None:
+    """Epoch-style integer seconds -> arc 'length' convention (MM:SS)."""
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _epoch_ts(value: Any) -> str | None:

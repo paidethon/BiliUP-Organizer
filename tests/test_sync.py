@@ -205,6 +205,7 @@ def test_history_upsert_idempotent_and_stats(db: Session, monkeypatch: pytest.Mo
         "ups_touched": 1,
         "history_truncated": False,
         "profiles_backfilled": 0,
+        "videos_backfilled": 0,
     }
     assert db.query(WatchHistory).count() == 3
     db.refresh(up)
@@ -222,6 +223,7 @@ def test_history_upsert_idempotent_and_stats(db: Session, monkeypatch: pytest.Mo
         "ups_touched": 1,
         "history_truncated": False,
         "profiles_backfilled": 0,
+        "videos_backfilled": 0,
     }
     assert db.query(WatchHistory).count() == 3
     db.refresh(up)
@@ -245,6 +247,7 @@ def test_history_uses_sync_settings_max_pages(db: Session, monkeypatch: pytest.M
         "ups_touched": 0,
         "history_truncated": False,
         "profiles_backfilled": 0,
+        "videos_backfilled": 0,
     }
     assert calls[0]["kwargs"].get("max_pages") == 7
 

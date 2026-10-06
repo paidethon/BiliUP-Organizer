@@ -533,3 +533,167 @@ def test_push_run_gated_by_native_push_enabled_setting(db: Session, monkeypatch:
     result = sync_service.run_sync_kind(db, "native_push", mode="append")
     assert result == {"mode": "append"}
     assert captured["mode"] == "append"
+
+
+# --------------------------------------- stale mappings (tag deleted upstream)
+
+
+def _mock_tags_deleted_world(
+    live_tags: list[dict],
+    user_tags_before: dict[int, set[int]],
+    user_tags_after: dict[int, set[int]],
+    created_log: list[str],
+    deleted_log: list[str],
+    add_log: list[dict],
+):
+    """Upstream world where a mapped tag was deleted outside the app:
+    /x/relation/tags returns only the surviving tags; tag/create appends a
+    fresh id; per-UP reads flip to user_tags_after once a write lands."""
+    state = {"written": False, "next_id": 900}
+    tags_state = {"list": [dict(t) for t in live_tags]}
+
+    respx.get(f"{API_BASE}/x/relation/tags").mock(
+        side_effect=lambda request: envelope([dict(t) for t in tags_state["list"]])
+    )
+    respx.get(f"{API_BASE}/x/relation/tag").mock(return_value=envelope([]))
+
+    def _user_tags(request: httpx.Request) -> httpx.Response:
+        fid = int(request.url.params["fid"])
+        tags = user_tags_after.get(fid, set()) if state["written"] else user_tags_before.get(fid, set())
+        return envelope({str(tag): f"tag{tag}" for tag in tags})
+
+    respx.get(f"{API_BASE}/x/relation/tag/user").mock(side_effect=_user_tags)
+
+    def _create(request: httpx.Request) -> httpx.Response:
+        body = _form_body(request)
+        created_log.append(body["tag"])
+        tags_state["list"].append({"tagid": state["next_id"], "name": body["tag"], "count": 0, "tip": ""})
+        state["next_id"] += 1
+        return envelope({"tagid": state["next_id"] - 1})
+
+    respx.post(f"{API_BASE}/x/relation/tag/create").mock(side_effect=_create)
+
+    def _delete(request: httpx.Request) -> httpx.Response:
+        deleted_log.append(_form_body(request)["tagid"])
+        return envelope({})
+
+    respx.post(f"{API_BASE}/x/relation/tag/del").mock(side_effect=_delete)
+
+    def _add_users(request: httpx.Request) -> httpx.Response:
+        body = _form_body(request)
+        add_log.append(body)
+        state["written"] = True
+        return envelope({})
+
+    respx.post(f"{API_BASE}/x/relation/tags/addUsers").mock(side_effect=_add_users)
+
+
+@respx.mock
+def test_plan_clears_stale_mapping(db: Session) -> None:
+    """Mapped tag deleted upstream (e.g. manually on Bilibili): the previous
+    behaviour crashed every plan with 22104 该分组不存在. Now the dead mapping
+    is cleared and the plan surfaces it as unmapped (push will rebuild it)."""
+    _group_a, _group_b = _group_ids(db)
+    created: list[str] = []
+    deleted: list[str] = []
+    adds: list[dict] = []
+    _mock_tags_deleted_world(
+        live_tags=[{"tagid": 1, "name": TAG1_NAME, "count": 0, "tip": ""}],
+        user_tags_before={},
+        user_tags_after={},
+        created_log=created,
+        deleted_log=deleted,
+        add_log=adds,
+    )
+
+    plan = native_sync.plan_push(db, mode="append")
+    assert plan["stale_mappings_cleared"] == [TAG2_NAME]
+    assert TAG2_NAME in plan["unmapped_local_groups"]
+    assert created == []  # dry run: preview never creates tags
+
+
+@respx.mock
+def test_push_clears_stale_mapping_and_recreates_tag(db: Session) -> None:
+    """Push after an upstream tag deletion: the tag is recreated from the
+    LOCAL group name (never a stub) and members re-converge."""
+    _group_a, group_b = _group_ids(db)
+    make_up(db, 501, (group_b,))
+    created: list[str] = []
+    deleted: list[str] = []
+    adds: list[dict] = []
+    _mock_tags_deleted_world(
+        live_tags=[{"tagid": 1, "name": TAG1_NAME, "count": 0, "tip": ""}],
+        user_tags_before={},
+        user_tags_after={501: {900}},
+        created_log=created,
+        deleted_log=deleted,
+        add_log=adds,
+    )
+
+    result = native_sync.push(db, mode="append")
+
+    assert created == [TAG2_NAME]  # rebuilt from the LOCAL name, never a stub
+    assert deleted == []  # append mode never deletes
+    mapping = db.query(NativeGroupMap).filter(NativeGroupMap.bili_tag_id == 900).one()
+    assert mapping.local_group_id == group_b
+    assert mapping.bili_tag_name == TAG2_NAME
+    assert any(call["tagids"] == "900" and call["fids"] == "501" for call in adds)
+    assert result["created_tags"] == 1
+    assert result["stale_mappings_cleared"] == [TAG2_NAME]
+
+
+@respx.mock
+def test_overwrite_rebuilds_stale_group_without_deleting_missing_tag(db: Session) -> None:
+    """Managed-scope rebuild with a stale mapping: only the LIVE tag is
+    deleted upstream (the missing one must not trigger 22104), and the stale
+    group's tag is still recreated and filled."""
+    _group_a, group_b = _group_ids(db)
+    make_up(db, 601, (group_b,))
+    created: list[str] = []
+    deleted: list[str] = []
+    adds: list[dict] = []
+    _mock_tags_deleted_world(
+        live_tags=[{"tagid": 1, "name": TAG1_NAME, "count": 0, "tip": ""}],
+        user_tags_before={},
+        user_tags_after={601: {901}},
+        created_log=created,
+        deleted_log=deleted,
+        add_log=adds,
+    )
+
+    result = native_sync.push_overwrite(db)
+
+    assert deleted == ["1"]  # tag 2 (already gone upstream) is not deleted
+    assert created == [TAG1_NAME, TAG2_NAME]  # the whole managed scope rebuilds
+    mapping = db.query(NativeGroupMap).filter(NativeGroupMap.bili_tag_id == 901).one()
+    assert mapping.local_group_id == group_b
+    assert result["stale_mappings_cleared"] == [TAG2_NAME]
+    assert any(call["tagids"] == "901" and call["fids"] == "601" for call in adds)
+
+
+@respx.mock
+def test_member_read_22104_race_is_tolerated(db: Session) -> None:
+    """A tag deleted between the listing and the member read answers 22104 —
+    its members fell back to the default tag, so an empty set is correct."""
+    group_a, _group_b = _group_ids(db)
+    make_up(db, 701, (group_a,))
+
+    def _tag_members(request: httpx.Request) -> httpx.Response:
+        if int(request.url.params["tagid"]) == 1:
+            return httpx.Response(200, json={"code": 22104, "message": "该分组不存在", "data": None})
+        return envelope([])
+
+    respx.get(f"{API_BASE}/x/relation/tags").mock(
+        return_value=envelope(
+            [
+                {"tagid": 1, "name": TAG1_NAME, "count": 0, "tip": ""},
+                {"tagid": 2, "name": TAG2_NAME, "count": 0, "tip": ""},
+            ]
+        )
+    )
+    respx.get(f"{API_BASE}/x/relation/tag").mock(side_effect=_tag_members)
+    respx.get(f"{API_BASE}/x/relation/tag/user").mock(return_value=envelope({}))
+
+    plan = native_sync.plan_push(db, mode="append")
+    assert plan["to_add"] == {"1": [701]}  # desired members still converge
+    assert plan["tag_reads_complete"] is True
