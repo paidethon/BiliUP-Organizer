@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.services.bilibili.client import API_BASE, HISTORY_PAGE_SIZE
 from app.services.bilibili.errors import BiliError
 from app.services.bilibili.qrlogin import build_client
+from app.services.bilibili.video_zones import VIDEO_ZONES
 
 if TYPE_CHECKING:
     from app.services.bilibili.client import BiliClient
@@ -277,7 +278,8 @@ def _official_type(verify: Any) -> int:
 
 def _archive_tname(arc: dict, tlist: dict[str, str] | None) -> str | None:
     """分区名 for one archive row: direct tname field, else the tlist index
-    keyed by typeid (arc/search vlist items carry typeid but no tname)."""
+    keyed by typeid, else the bundled zone table (upstream removed tname and
+    tlist from arc/search responses — see video_zones.py)."""
     name = str(arc.get("tname") or "")
     if name:
         return name
@@ -285,7 +287,7 @@ def _archive_tname(arc: dict, tlist: dict[str, str] | None) -> str | None:
         mapped = tlist.get(str(arc.get("typeid") or ""))
         if mapped:
             return mapped
-    return None
+    return VIDEO_ZONES.get(str(arc.get("typeid") or "")) or None
 
 
 def backfill_watched_video_details(
@@ -294,7 +296,7 @@ def backfill_watched_video_details(
     *,
     window_days: int = 14,
     max_videos: int = 120,
-) -> int:
+) -> dict[str, int]:
     """Bounded metadata backfill for recently WATCHED videos missing in the
     videos table (or still without 分区名): GET /x/web-interface/view per
     bvid, no wbi, throttled like every upstream call.
@@ -303,7 +305,7 @@ def backfill_watched_video_details(
     visits, so most watched videos never enter the videos table and the
     weekly 内容分区 chart aggregates nothing. Fills up to ``max_videos`` per
     run, newest watch first; per-video failures are logged and skipped.
-    Returns the number of videos upserted."""
+    Returns {"filled": <videos upserted>} for the guarded caller."""
     from app.models import Video, WatchHistory
 
     cutoff = (datetime.now(UTC) - timedelta(days=window_days)).strftime("%Y-%m-%d %H:%M:%S")
@@ -341,7 +343,7 @@ def backfill_watched_video_details(
                 continue
             owner = info.get("owner") if isinstance(info.get("owner"), dict) else {}
             title = str(info.get("title") or "")
-            tname = str(info.get("tname") or "") or None
+            tname = str(info.get("tname") or "") or VIDEO_ZONES.get(str(info.get("tid") or "")) or None
             pubdate = _epoch_ts(info.get("pubdate"))
             duration = _seconds_to_length(info.get("duration"))
             up_mid = _as_int(owner.get("mid")) or seen.get(bvid) or 0
